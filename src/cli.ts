@@ -10,10 +10,13 @@ import { serve } from "./runtime.ts";
 import { checkUpstream } from "./upstream.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import type { Role } from "./store.ts";
+import { connection, readConnection, type Connection } from "./connection.ts";
 
 const USAGE = `dori-codex - a local multi-session harness on Codex app-server
 
   dori-codex up [--cwd DIR]                         start local runtime + lead/duty threads (no model turn)
+  dori-codex up --connect ws+unix:///PATH --lead THREAD   attach existing loaded chat as external lead
+  dori-codex up --owned                            explicitly select owned stdio mode while stopped
   dori-codex role <lead|duty> [THREAD]                register an existing Dori-owned thread
   dori-codex start <key> --brief FILE [--cwd DIR]   start a Codex thread from a brief + lane rules
   dori-codex report <key> --text T [--status working|waiting]
@@ -72,11 +75,20 @@ async function textOf(a: Args): Promise<string> {
   return (await Bun.stdin.text()).trim();
 }
 
-async function up(d: Deps, cwd: string, autoLoop: boolean): Promise<void> {
+async function up(d: Deps, cwd: string, autoLoop: boolean, selected: Connection): Promise<void> {
   const lease = d.store.lockRoles();
   if (!lease) throw new Refusal("role startup or registration is busy; retry after it finishes");
   try {
-  await ensureRuntime(d.store.root, autoLoop);
+  const currentLead = d.store.roles().lead;
+  if (selected.mode === "shared" && currentLead && currentLead !== selected.lead) throw new Refusal("lead already registered; replacement refused (use a separate DORI_HOME)");
+  if (selected.mode === "owned" && currentLead && d.sessions.isExternalLead?.(currentLead)) throw new Refusal("external lead registered; use a separate DORI_HOME for owned mode");
+  await ensureRuntime(d.store.root, autoLoop, selected);
+  if (selected.mode === "shared") {
+    await new Sessions(d.store.root).call("registerExternalLead", { threadId: selected.lead });
+    lease.set("lead", selected.lead);
+    console.log(`UP lead=${selected.lead} duty=code mode=shared home=${d.store.root}`);
+    return;
+  }
   for (const role of ROLES) {
     const old = d.store.roles()[role];
     if (old && await d.sessions.status(old) !== "gone") continue;
@@ -157,13 +169,19 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       else throw new Refusal("use requests, or requests answer <id> --json FILE");
       return 0;
     }
-    case "up":
-      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "auto-loop") === "true");
+    case "up": {
+      const endpoint = one(a, "connect"), lead = one(a, "lead"), owned = one(a, "owned");
+      if ((endpoint && !lead) || (lead && !endpoint) || (owned && (endpoint || lead))) throw new Refusal("use --connect ENDPOINT --lead THREAD together, or --owned");
+      const selected = endpoint ? connection({ mode: "shared", endpoint, lead }) : owned ? connection({ mode: "owned" }) : readConnection(d.store.root);
+      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "auto-loop") === "true", selected);
       return 0;
+    }
     case "role": {
       const role = need(x, "role") as Role;
       if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
       const thread = need(a.pos[2], "thread id");
+      const selected = readConnection(d.store.root);
+      if (selected.mode === "shared" && (role === "lead" || thread === selected.lead)) throw new Refusal("external lead role is fixed by the shared connection; replacement refused");
       if (!d.sessions.known(thread)) throw new Refusal("role must refer to a Dori-owned thread");
       d.store.setRole(role, thread);
       console.log(`ROLE ${role}=${thread}`);
