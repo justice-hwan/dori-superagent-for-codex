@@ -9,7 +9,7 @@ import { World } from "./fake.ts";
 const homes: string[] = [];
 const home = () => { const p = mkdtempSync(join(tmpdir(), "dori-review-regression-")); homes.push(p); return p; };
 afterEach(() => { for (const p of homes.splice(0)) rmSync(p, { recursive: true, force: true }); });
-const mock = (request: (method: string, params?: any) => Promise<any>) => ({ request, write() {}, disconnect: async () => {}, onMessage: () => {}, onExit: () => {} }) as unknown as Codex;
+const mock = (request: (method: string, params?: any) => Promise<any>) => ({ connection: { mode: "owned" }, shared: false, request, write() {}, disconnect: async () => {}, onMessage: () => {}, onExit: () => {} }) as unknown as Codex;
 
 test("crash before turn/start acceptance preserves uncertainty and never resubmits after restart", async () => {
   const root = home(); let firstStarts = 0, replayStarts = 0;

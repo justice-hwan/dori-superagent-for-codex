@@ -1,11 +1,12 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { Codex, type RpcMessage } from "./codex.ts";
-import { socketPath, validThread, type AgentStatus } from "./sessions.ts";
+import { Codex, CodexRpcError, type RpcMessage } from "./codex.ts";
+import { readConnection } from "./connection.ts";
+import { socketPath, validThread, DeliveryDeferred, type AgentStatus } from "./sessions.ts";
 import { acquireFileLease } from "./lock.ts";
 import { stateHome } from "./paths.ts";
 
-export type Session = { id: string; name: string; cwd: string; instructions: string; status: AgentStatus; model?: string; readOnly?: boolean; everStarted?: boolean; uncertainDelivery?: boolean; requiresRecovery?: boolean; pendingDeliveryId?: string; lastDeliveryId?: string; turnId?: string; lastTurnId?: string; lastTurnStatus?: string; output: string; closed?: boolean };
+export type Session = { id: string; name: string; cwd: string; instructions: string; status: AgentStatus; externalLead?: boolean; ownedTurnId?: string; model?: string; readOnly?: boolean; everStarted?: boolean; uncertainDelivery?: boolean; requiresRecovery?: boolean; pendingDeliveryId?: string; lastDeliveryId?: string; turnId?: string; lastTurnId?: string; lastTurnStatus?: string; output: string; closed?: boolean };
 export type Request = { id: number | string; method: string; params: any };
 
 export class Runtime {
@@ -21,7 +22,7 @@ export class Runtime {
   private finished = new Set<string>();
   stopping = false;
 
-  constructor(readonly home: string, readonly codex = new Codex(), private readonly reviewTimeoutMs = 1_200_000) {
+  constructor(readonly home: string, readonly codex = new Codex(), private readonly reviewTimeoutMs = 1_200_000, private readonly interruptTimeoutMs = 5000) {
     this.home = stateHome(home);
     mkdirSync(join(home, "sessions"), { recursive: true, mode: 0o700 });
     for (const f of readdirSync(join(home, "sessions"))) {
@@ -50,8 +51,79 @@ export class Runtime {
   }
   private owned(id: string): Session {
     const s = this.sessions.get(id);
-    if (!s || s.closed) throw new Error("thread is not an open Dori-owned session");
+    if (!s || s.closed || this.isExternalLead(id)) throw new Error("thread is not an open Dori-owned session (external lead is protected)");
     return s;
+  }
+
+  isExternalLead(id: string): boolean {
+    const c = this.codex.connection;
+    return this.sessions.get(id)?.externalLead === true || (c.mode === "shared" && c.lead === id);
+  }
+
+  private async ensureConnection(): Promise<void> { if (this.codex.shared) await this.codex.connect(); }
+
+  /** Registration first proves native ownership/load state without resuming or changing policy. */
+  async registerExternalLead(id: string): Promise<void> {
+    const c = this.codex.connection;
+    if (c.mode !== "shared" || c.lead !== id) throw new Error("external lead must match the selected shared connection");
+    const existing = this.sessions.get(id);
+    if (existing && !existing.externalLead) throw new Error("cannot replace an owned session with an external lead");
+    if ([...this.sessions.values()].some(s => s.externalLead && s.id !== id)) throw new Error("external lead already registered; replacement refused");
+    await this.ensureConnection();
+    const r = await this.codex.request("thread/read", { threadId: id, includeTurns: false });
+    if (r.thread?.id !== id || !["active", "idle"].includes(r.thread?.status?.type)) throw new Error("external lead must already be loaded and idle or active on this server");
+    const s: Session = existing ?? { id, name: r.thread.name ?? "external lead", cwd: "", instructions: "", externalLead: true, status: "unknown", output: "" };
+    this.sessions.set(id, s); this.save(s);
+    await this.refreshShared(s);
+  }
+
+  private async refreshShared(s: Session): Promise<void> {
+    await this.ensureConnection();
+    if (!this.loaded.has(s.id)) {
+      if (this.isExternalLead(s.id)) {
+        const r = await this.codex.request("thread/resume", { threadId: s.id, excludeTurns: true });
+        if (r.thread?.id !== s.id) throw new Error("Codex returned a different resumed thread");
+        this.loaded.add(s.id);
+      } else await this.resume(s);
+    }
+    // Always read native status, including after UI-started turns. Local notification caches are insufficient.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const revision = this.revisions.get(s.id) ?? 0;
+      const r = await this.codex.request("thread/read", { threadId: s.id, includeTurns: false });
+      if (r.thread?.id !== s.id) throw new Error("Codex returned a different thread");
+      const status = r.thread.status;
+      if (status?.type === "notLoaded") {
+        this.loaded.delete(s.id);
+        if (this.isExternalLead(s.id)) {
+          const joined = await this.codex.request("thread/resume", { threadId: s.id, excludeTurns: true });
+          if (joined.thread?.id !== s.id) throw new Error("Codex returned a different resumed thread");
+          this.loaded.add(s.id);
+        } else await this.resume(s);
+        continue;
+      }
+      let turn: any;
+      if (status?.type === "active") {
+        turn = (await this.codex.request("thread/turns/list", { threadId: s.id, sortDirection: "desc", limit: 1, itemsView: "notLoaded" })).data?.[0];
+        const current = await this.codex.request("thread/read", { threadId: s.id, includeTurns: false });
+        if (current.thread?.id !== s.id || current.thread?.status?.type !== "active" || (this.revisions.get(s.id) ?? 0) !== revision) continue;
+        status.activeFlags = current.thread.status.activeFlags;
+      } else {
+        if (status?.type === "idle" && !this.isExternalLead(s.id) && s.everStarted) {
+          turn = (await this.codex.request("thread/turns/list", { threadId: s.id, sortDirection: "desc", limit: 1, itemsView: "notLoaded" })).data?.[0];
+          const expected = s.ownedTurnId ?? s.turnId ?? s.lastTurnId;
+          const confirmed = typeof turn?.id === "string" && (!expected || turn.id === expected) && ["completed", "interrupted", "failed"].includes(turn.status);
+          s.requiresRecovery = !confirmed;
+          if (confirmed) { s.lastTurnId = turn.id; s.lastTurnStatus = turn.status; }
+        }
+        if ((this.revisions.get(s.id) ?? 0) !== revision) continue;
+      }
+      s.turnId = status?.type === "active" && typeof turn?.id === "string" && turn.status === "inProgress" ? turn.id : undefined;
+      const blocked = status?.type === "active" && (!Array.isArray(status.activeFlags) || status.activeFlags.length > 0);
+      s.status = s.uncertainDelivery ? "unknown" : status?.type === "idle" ? s.requiresRecovery ? "recovery" : !this.isExternalLead(s.id) && s.lastTurnStatus === "failed" ? "failed" : !this.isExternalLead(s.id) && s.lastTurnStatus === "completed" ? "done" : "idle" : blocked ? "blocked" : s.turnId ? "working" : "unknown";
+      this.save(s); return;
+    }
+    s.status = "unknown"; this.save(s);
+    throw new Error("native thread changed during refresh; delivery deferred");
   }
 
   private policy(cwd: string, readOnly = false): Record<string, unknown> {
@@ -69,14 +141,18 @@ export class Runtime {
   async create(name: string, cwd: string, instructions: string, model?: string, readOnly = false): Promise<string> {
     if (this.stopping) throw new Error("runtime is stopping");
     cwd = stateHome(cwd);
+    await this.ensureConnection();
     const r = await this.codex.request("thread/start", {
       cwd, developerInstructions: instructions,
       approvalPolicy: "on-request", ...this.policy(cwd, readOnly), ...(model ? { model } : {}),
     });
     const id = r.thread?.id;
     if (typeof id !== "string" || !validThread(id)) throw new Error("Codex returned no valid thread id");
+    if (this.isExternalLead(id) || this.sessions.has(id)) throw new Error("Codex returned an existing or protected thread; ownership refused");
     const s: Session = { id, name, cwd, instructions, status: "idle", output: "", model, readOnly };
     this.sessions.set(id, s); this.loaded.add(id); this.save(s);
+    try { await this.codex.request("thread/name/set", { threadId: id, name: `🐾dori/${name}` }); }
+    catch { /* Older app-servers may not support titles. Ownership remains recorded. */ }
     return id;
   }
 
@@ -128,20 +204,21 @@ export class Runtime {
   async status(id: string): Promise<AgentStatus> {
     const s = this.sessions.get(id);
     if (!s || s.closed) return "gone";
-    await this.resume(s);
+    if (this.codex.shared) await this.refreshShared(s); else await this.resume(s);
     return s.status;
   }
 
   async deliver(id: string, text: string, deliveryId?: string): Promise<void> {
     if (this.stopping) throw new Error("runtime is stopping");
     if (!text.trim()) throw new Error("message must not be empty");
+    if (this.isExternalLead(id)) return this.deliverExternal(id, text, deliveryId);
     const s = this.owned(id);
     if (deliveryId && s.lastDeliveryId === deliveryId) return;
     if (this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread is closing or being interrupted; message not submitted");
     if (this.busy.has(id)) throw new Error("thread delivery already in progress");
     this.busy.add(id);
     try {
-      await this.resume(s);
+      if (this.codex.shared) await this.refreshShared(s); else await this.resume(s);
       if (s.status !== "idle" && s.status !== "done" && s.status !== "failed" && s.status !== "recovery") throw new Error(`thread is ${s.status}; message not submitted`);
       s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.requiresRecovery = false; s.everStarted = true; s.pendingDeliveryId = deliveryId;
       // Write-ahead uncertainty closes the crash window before the external submission.
@@ -151,7 +228,9 @@ export class Runtime {
         const r = await this.codex.request("turn/start", { threadId: id, input: [{ type: "text", text, text_elements: [] }], ...(deliveryId ? { clientUserMessageId: deliveryId } : {}) });
         if (typeof r.turn?.id !== "string") throw new Error("Codex returned no turn id");
         if (!this.finished.has(r.turn.id)) s.turnId = r.turn.id;
+        if (this.codex.shared && !this.finished.has(r.turn.id)) s.ownedTurnId = r.turn.id;
         s.lastDeliveryId = deliveryId; s.uncertainDelivery = false;
+        if (this.codex.shared && !this.finished.has(r.turn.id)) s.status = [...this.requests.values()].some(r => r.params.threadId === id) ? "blocked" : "working";
         this.save(s);
       } catch (e) {
         // A timeout does not prove no turn started. Don't automatically replay the input.
@@ -161,10 +240,53 @@ export class Runtime {
     } finally { this.busy.delete(id); }
   }
 
+  private async deliverExternal(id: string, text: string, deliveryId?: string): Promise<void> {
+    const c = this.codex.connection;
+    if (c.mode !== "shared" || c.lead !== id) throw new Error("external lead is not on the selected shared connection");
+    const s = this.sessions.get(id);
+    if (!s?.externalLead || s.closed) throw new Error("external lead is not registered");
+    if (!deliveryId) throw new Error("external delivery requires a stable inbox batch id");
+    if (s.lastDeliveryId === deliveryId) return;
+    if (this.busy.has(id)) throw new Error("thread delivery already in progress");
+    this.busy.add(id);
+    try {
+      await this.refreshShared(s);
+      if (s.uncertainDelivery) throw new Error("external delivery is uncertain; inspect and reconcile before retrying");
+      if (s.status !== "idle" && s.status !== "working") throw new DeliveryDeferred();
+      const turnId = s.turnId;
+      const method = s.status === "working" ? "turn/steer" : "turn/start";
+      if (method === "turn/steer" && !turnId) throw new DeliveryDeferred();
+      s.pendingDeliveryId = deliveryId; s.uncertainDelivery = true; this.save(s);
+      try {
+        const r = await this.codex.request(method, { threadId: id, input: [{ type: "text", text, text_elements: [] }], clientUserMessageId: deliveryId, ...(method === "turn/steer" ? { expectedTurnId: turnId } : {}) });
+        const accepted = method === "turn/steer" ? r.turnId : r.turn?.id;
+        if (typeof accepted !== "string" || !accepted || (method === "turn/steer" && accepted !== turnId)) throw new Error("external delivery response identity is unconfirmed");
+        s.lastDeliveryId = deliveryId; s.pendingDeliveryId = undefined; s.uncertainDelivery = false;
+        // Never infer native status here: UI turns may have advanced during the reply.
+        s.status = "unknown"; this.save(s);
+      } catch (e) {
+        // A definitive precondition rejection submitted nothing. Leave the same batch queued;
+        // a later duty pass refreshes identity. Never start a fallback turn in this attempt.
+        if (e instanceof CodexRpcError && e.turnRace) {
+          s.uncertainDelivery = false; s.pendingDeliveryId = undefined; s.status = "unknown"; this.save(s);
+          throw new DeliveryDeferred();
+        }
+        s.status = "unknown"; s.uncertainDelivery = true; this.save(s); throw e;
+      }
+    } finally { this.busy.delete(id); }
+  }
+
   private message(m: RpcMessage): void {
     const p = m.params ?? {};
     const s = this.sessions.get(p.threadId ?? p.thread?.id);
     if (m.id !== undefined && m.method) {
+      if (this.codex.shared && (!s || s.closed || this.isExternalLead(s.id))) {
+        if (s && !s.closed && this.isExternalLead(s.id)) {
+          this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
+          s.status = s.uncertainDelivery ? "unknown" : "blocked"; this.save(s);
+        }
+        return; // Never resolve/reject a native app request.
+      }
       if (!s || s.closed) {
         this.codex.write({ id: m.id, error: { code: -32601, message: "Dori does not own this request's thread" } });
         return;
@@ -175,12 +297,19 @@ export class Runtime {
       return;
     }
     if (m.method === "serverRequest/resolved") {
-      this.requests.delete(String(p.requestId)); this.saveRequests();
+      const request = this.requests.get(String(p.requestId));
+      if (request?.params.threadId === p.threadId) { this.requests.delete(String(p.requestId)); this.saveRequests(); }
     }
     if (!s || s.closed) return;
-    if (m.method === "turn/started") {
+    if (m.method === "thread/status/changed") {
       this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
-      if (this.submitting.has(s.id)) { s.lastDeliveryId = s.pendingDeliveryId; s.uncertainDelivery = false; }
+      const status = p.status;
+      s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? Array.isArray(status.activeFlags) && status.activeFlags.length === 0 ? "working" : "blocked" : status?.type === "idle" ? "idle" : "unknown";
+    } else if (m.method === "turn/started") {
+      this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
+      // Shared notifications may originate in the native UI. Only our verified RPC
+      // result can acknowledge a shared submission; an unrelated start proves nothing.
+      if (!this.codex.shared && this.submitting.has(s.id)) { s.lastDeliveryId = s.pendingDeliveryId; s.uncertainDelivery = false; }
       s.status = s.uncertainDelivery ? "unknown" : "working"; s.turnId = p.turn?.id;
     }
     else if (m.method === "item/agentMessage/delta") s.output += p.delta ?? "";
@@ -191,6 +320,7 @@ export class Runtime {
       this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
       const turn = p.turn;
       if (typeof turn?.id === "string") this.finished.add(turn.id);
+      if (s.ownedTurnId === turn?.id) s.ownedTurnId = undefined;
       s.lastTurnStatus = turn?.status;
       if (typeof turn?.id === "string") s.lastTurnId = turn.id;
       s.requiresRecovery = false;
@@ -203,12 +333,13 @@ export class Runtime {
   }
 
   async reconcile(id: string, delivered: boolean): Promise<void> {
-    const s = this.owned(id);
+    const s = this.isExternalLead(id) ? this.sessions.get(id) : this.owned(id);
+    if (!s || s.closed) throw new Error("session is not registered");
     if (this.busy.has(id) || this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread operation in progress; reconcile after it finishes");
     if (!s.uncertainDelivery) throw new Error("thread has no uncertain delivery");
     this.busy.add(id);
     try {
-    await this.resume(s);
+    if (this.codex.shared) await this.refreshShared(s); else await this.resume(s);
     const revision = this.revisions.get(id) ?? 0;
     const r = await this.codex.request("thread/read", { threadId: id, includeTurns: false });
     if ((this.revisions.get(id) ?? 0) !== revision) throw new Error("thread state changed during reconciliation; inspect it again");
@@ -221,9 +352,9 @@ export class Runtime {
   async answer(id: string, result: unknown): Promise<void> {
     const request = this.requests.get(id);
     if (!request) throw new Error("request is no longer pending; refresh requests before answering");
+    const s = this.owned(request.params.threadId);
     this.codex.write({ id: request.id, result });
     this.requests.delete(id); this.saveRequests();
-    const s = this.owned(request.params.threadId);
     s.status = "working"; this.save(s);
   }
 
@@ -237,17 +368,29 @@ export class Runtime {
         if (Date.now() >= deadline) throw new Error("submission still pending; interruption unconfirmed");
         await Bun.sleep(10);
       }
-      await this.resume(s);
-      const turnId = s.turnId;
+      if (this.codex.shared) await this.refreshShared(s); else await this.resume(s);
+      const turnId = this.codex.shared ? s.ownedTurnId : s.turnId;
+      if (this.codex.shared && turnId && s.turnId && turnId !== s.turnId) throw new Error("native turn differs from the owned turn; interruption unconfirmed");
       if (!turnId) {
         if (s.uncertainDelivery || ["working", "blocked", "unknown"].includes(s.status)) throw new Error("active turn identity is unresolved; interruption unconfirmed");
         return;
       }
       try { await this.codex.request("turn/interrupt", { threadId: id, turnId }); }
       catch (e) { if (!this.finished.has(turnId)) throw e; }
-      const until = Date.now() + 5000;
-      while (!this.finished.has(turnId) && s.turnId === turnId) {
-        if (Date.now() >= until) throw new Error("interrupt acknowledged but completion is unconfirmed");
+      const until = Date.now() + this.interruptTimeoutMs;
+      while (!(s.lastTurnId === turnId && s.lastTurnStatus === "interrupted")) {
+        if (Date.now() >= until) {
+          if (this.codex.shared) {
+            const turns = await this.codex.request("thread/turns/list", { threadId: id, sortDirection: "desc", limit: 100, itemsView: "notLoaded" });
+            const exact = turns.data?.find((t: any) => t.id === turnId);
+            if (exact?.status === "interrupted") {
+              s.lastTurnId = turnId; s.lastTurnStatus = "interrupted"; s.ownedTurnId = undefined;
+              if (s.turnId === turnId) s.turnId = undefined;
+              s.status = "idle"; this.save(s); return;
+            }
+          }
+          throw new Error("interrupt acknowledged but interrupted completion is unconfirmed; ownership retained");
+        }
         await Bun.sleep(10);
       }
     } finally { this.interrupting.delete(id); }
@@ -285,7 +428,8 @@ export class Runtime {
 
   async shutdown(): Promise<void> {
     this.stopping = true;
-    await Promise.allSettled([...this.sessions.values()].filter((s) => !s.closed && s.turnId).map((s) => this.interrupt(s.id)));
+    const results = await Promise.allSettled([...this.sessions.values()].filter((s) => !s.closed && !this.isExternalLead(s.id) && (this.codex.shared ? s.ownedTurnId || s.uncertainDelivery : s.turnId)).map((s) => this.interrupt(s.id)));
+    if (this.codex.shared && results.some(r => r.status === "rejected")) throw new Error("owned worker cleanup is unconfirmed; runtime ownership retained (shared service untouched)");
     await this.codex.disconnect();
   }
 }
@@ -323,7 +467,8 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
       if (!st.isSocket() || st.uid !== process.getuid?.()) throw new Error("refusing to replace an unowned runtime socket");
       unlinkSync(path);
     }
-    runtime = new Runtime(home);
+    const selected = readConnection(home);
+    runtime = new Runtime(home, new Codex(selected));
     await runtime.codex.connect();
     if (!lease.holds()) throw new Error("runtime ownership changed during startup");
     server = Bun.serve({ unix: path, maxRequestBodySize: 1_048_576, async fetch(req, server) {
@@ -334,7 +479,8 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
         if (runtime!.stopping && method !== "health" && method !== "shutdown") throw new Error("runtime is stopping");
         let value: unknown;
         switch (method) {
-          case "health": value = { pid: process.pid, sessions: runtime!.sessions.size, stopping, shutdownError }; break;
+          case "health": value = { pid: process.pid, sessions: runtime!.sessions.size, stopping, shutdownError, connection: selected }; break;
+          case "registerExternalLead": value = await runtime!.registerExternalLead(a.threadId); break;
           case "create": value = await runtime!.create(a.name, a.cwd, a.instructions, a.model, a.readOnly === true); break;
           case "status": value = await runtime!.status(a.threadId); break;
           case "deliver": value = await runtime!.deliver(a.threadId, a.text, a.deliveryId); break;
@@ -350,7 +496,7 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
           default: throw new Error("unknown runtime method");
         }
         return Response.json({ value: value ?? null });
-      } catch (e) { return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 }); }
+      } catch (e) { return Response.json({ error: e instanceof Error ? e.message : String(e), ...(e instanceof DeliveryDeferred ? { deferred: true } : {}) }, { status: 400 }); }
     } });
     socketOwned = true;
     chmodSync(path, 0o600);

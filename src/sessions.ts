@@ -7,6 +7,7 @@ import { stateHome } from "./paths.ts";
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "failed" | "recovery" | "unknown" | "gone";
 export interface SessionRuntime {
   known(threadId: string): boolean;
+  isExternalLead?(threadId: string): boolean;
   create(name: string, cwd: string, instructions: string, model?: string): Promise<string>;
   status(threadId: string): Promise<AgentStatus>;
   deliver(threadId: string, text: string, deliveryId?: string): Promise<void>;
@@ -15,6 +16,8 @@ export interface SessionRuntime {
   review(text: string, cwd: string, model?: string): Promise<string>;
 }
 
+export class DeliveryDeferred extends Error { constructor() { super("thread changed or blocked; message remains queued"); } }
+
 export const validThread = (id: string) => /^[a-zA-Z0-9_-]{1,100}$/.test(id);
 // Unix sockets have a short platform limit; private state directories may have very long names.
 export const socketPath = (home: string) => join(tmpdir(), `dori-codex-${process.getuid?.() ?? "user"}-${createHash("sha256").update(stateHome(home)).digest("hex").slice(0, 16)}.sock`);
@@ -22,6 +25,7 @@ export const socketPath = (home: string) => join(tmpdir(), `dori-codex-${process
 export class Sessions implements SessionRuntime {
   constructor(readonly home: string) { this.home = stateHome(home); }
   known(id: string): boolean { return validThread(id) && existsSync(join(this.home, "sessions", `${id}.json`)); }
+  isExternalLead(id: string): boolean { return (this.snapshot(id) as { externalLead?: boolean } | undefined)?.externalLead === true; }
 
   async call<T = any>(method: string, args: unknown = {}): Promise<T> {
     let response: Response;
@@ -30,7 +34,8 @@ export class Sessions implements SessionRuntime {
       const deadline = method === "review" ? 1_400_000 : method === "interrupt" ? 130_000 : method === "close" || method === "deliver" || method === "reconcile" ? 100_000 : method === "status" ? 65_000 : 35_000;
       response = await fetch("http://localhost/rpc", { unix: socketPath(this.home), method: "POST", body: JSON.stringify({ method, args }), timeout: false, signal: AbortSignal.timeout(deadline) });
     } catch { throw new Error("Dori runtime unavailable or request timed out; inspect status before retrying (start with dori-codex up)"); }
-    const result = await response.json() as { value?: T; error?: string };
+    const result = await response.json() as { value?: T; error?: string; deferred?: boolean };
+    if (result.deferred) throw new DeliveryDeferred();
     if (!response.ok || result.error) throw new Error(result.error ?? "Dori runtime request failed");
     return result.value as T;
   }

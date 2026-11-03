@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { shq, spawnExec, type Exec } from "./process.ts";
-import { Sessions, type SessionRuntime, type AgentStatus } from "./sessions.ts";
+import { Sessions, DeliveryDeferred, type SessionRuntime, type AgentStatus } from "./sessions.ts";
 import { KEY_RE, Store, type HostLoad, type Lane, type Role } from "./store.ts";
 import { prepareReviewSnapshot } from "./review-snapshot.ts";
 import { integratePair, recoverIntegration, type Pair } from "./merge.ts";
@@ -109,7 +109,7 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
   if (d.store.queued(threadId).length === 0) return true;
   const status = await d.sessions.status(threadId);
   if (status === "gone") throw new Refusal(`thread ${threadId} is gone; queued message(s) kept in its inbox`);
-  if (!READY_TO_READ.includes(status)) return false;
+  if (!READY_TO_READ.includes(status) && !(status === "working" && d.sessions.isExternalLead?.(threadId))) return false;
   let batch = d.store.inboxBatch(threadId)!;
   while (batch.messages.every((m) => !m.text.trim())) {
     d.store.ackInbox(threadId, batch.messages.length);
@@ -135,7 +135,8 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
       }
     });
   }
-  await d.sessions.deliver(threadId, body, batch.id);
+  try { await d.sessions.deliver(threadId, body, batch.id); }
+  catch (e) { if (e instanceof DeliveryDeferred) return false; throw e; }
   const lane = d.store.laneByThread(threadId);
   if (lane?.kickoffPending) {
     d.store.editLane(lane.key, (current) => {

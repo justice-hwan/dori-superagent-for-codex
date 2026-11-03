@@ -36,6 +36,26 @@ dori-codex down
 
 `up` starts one owned local app-server process and creates/resumes role threads. Without `--auto-loop`, it does not start a model turn until a message is sent. `down` interrupts owned turns and stops this runtime; stored threads can be resumed later. Existing shared Codex services and remote hosts are not stopped. This package does not register any login service or scheduled job.
 
+### Shared local app-server and an existing lead chat
+
+To use an already running local Codex app-server and your existing chat as lead, choose a separate state home:
+
+```sh
+export DORI_HOME=/absolute/path/to/shared-dori-state
+dori-codex up --connect ws+unix:///absolute/path/to/app-server.sock --lead EXISTING_THREAD_ID
+dori-codex send lead --text 'Continue the authorized work'
+dori-codex down
+dori-codex up  # reuses this home's saved connection.json and lead
+```
+
+Only local Unix WebSockets are accepted. The lead must already be loaded (idle or active) on that server at registration. Dori rejoins with only `threadId` and `excludeTurns`; it preserves the chat's title, instructions, tools, policy and native approval flow. It creates no synthetic lead or duty model thread in this mode; duty remains a code loop. New Dori workers are named `🐾dori/{topic}` when the server supports `thread/name/set`.
+
+Reports steer an active, unblocked external lead using the freshly read current turn ID. Idle leads receive a new turn. Busy workers and approval/input blocked chats keep messages queued. Both submission paths use the stable inbox batch ID. An unknown response, timeout or disconnect retains uncertainty and prevents replay; inspect native history before `reconcile`. A definitive turn precondition rejection keeps the same batch queued for a later refreshed attempt, without a fallback submission in that attempt.
+
+The external lead cannot be archived, closed or interrupted by Dori, and its approval/input requests stay with the native app. Shared `down` confirms interruption of Dori-created worker turns and disconnects only this client; unrelated/native turns and the shared service remain alive. Unconfirmed cleanup reports an error and retains runtime ownership for inspection. Dori never spawns, signals, restarts or shuts down a shared app-server.
+
+Migration and rollback: stop the old Dori runtime with its original `DORI_HOME`, retain that home's state, and start shared mode in a new home. A live mode/endpoint/lead mismatch and lead replacement are refused. To roll back, stop the shared Dori runtime, restore the original home and run `up` there; a fresh home can explicitly select `up --owned`. Do not edit a live home's connection settings. These behaviors have offline fixture coverage; this change does not claim live shared-server/model validation.
+
 `bash install.sh` links this checkout's CLI and the `dori-codex` skill. It never pulls updates or starts services. The command name is `dori-codex`, so an existing `dori` command is preserved.
 
 ## Tasks and evidence
@@ -83,7 +103,7 @@ dori-codex interrupt fix-login
 dori-codex reconcile fix-login --delivered true
 ```
 
-Only threads recorded by this runtime can receive messages, be interrupted or archived. Pending questions and approvals are shown by `requests`; answering requires an explicit response file. Credentials remain with Codex's login flow.
+Only registered threads can receive messages. Interruption and archival require a Dori-owned worker; the external lead is protected. Pending owned-worker questions and approvals are shown by `requests`; answering requires an explicit response file. External/unrelated requests stay with the native app. Credentials remain with Codex's login flow.
 
 Interruption waits for an in-flight submission and confirms the turn's completion event. An unresolved turn or missing confirmation is reported as unconfirmed. Reviews allow 20 minutes of model work, with additional time for setup and cleanup; transport idle limits do not end a running review early.
 
@@ -110,9 +130,9 @@ The loop rechecks current open lanes, host load and its stop switch before each 
 
 State defaults to `~/.dori-codex`, separate from older installations. `DORI_HOME` changes it and is resolved to an absolute directory before storage, socket identity, daemon startup and generated commands. Session records, inboxes, requests and logs are private local files. The runtime listens on a mode-0600 Unix socket. A dead runtime/inbox lease is reclaimed under a serialized claim gate. A crash during the short claim section leaves a `.claim` file for explicit owner inspection; it is not automatically removed. Shutdown verifies exit of its own child, using bounded TERM/KILL escalation if needed. `DORI_CODEX_BIN` selects the Codex executable, not a shell command.
 
-There is **no usage collector, install registration, analytics key or telemetry sender in this fork**. Dori's own communication is the local Unix socket and app-server stdio. Codex model requests and user-configured Codex tools/providers still use their normal connections. GitHub operations use `gh`. No Slack, Notion, Kakao or other messenger connector is bundled or started.
+There is **no usage collector, install registration, analytics key or telemetry sender in this fork**. Dori's own communication is the local runtime Unix socket and owned app-server stdio or an explicitly selected local Unix WebSocket. Codex model requests and user-configured Codex tools/providers still use their normal connections. GitHub operations use `gh`. No Slack, Notion, Kakao or other messenger connector is bundled or started.
 
-This runtime starts its own app-server with the user's existing Codex configuration. It does not attach to the desktop app's live server. Automatic visibility or immediate refresh in the Codex desktop sidebar is not guaranteed; persisted thread IDs can be opened/resumed with compatible Codex clients.
+By default this runtime starts its own app-server with the user's existing Codex configuration. Shared mode explicitly attaches to an existing local server. Automatic visibility or immediate refresh in the Codex desktop sidebar is not guaranteed; persisted thread IDs can be opened/resumed with compatible Codex clients.
 
 Normal threads use a per-thread workspace permission profile adding the private state directory and exact local Unix socket. A managed proxy uses an empty domain allowlist; this does not grant arbitrary command networking or change global configuration. Review threads retain their separate read-only policy. A stopping runtime is never reported ready; active-work permission failures retain ownership for inspection.
 
@@ -128,7 +148,7 @@ bun run smoke:live
 bun run smoke:lane
 ```
 
-Offline tests use an in-memory harness and a fake app-server process, including real JSON-RPC framing and Unix-socket CLI integration. They do not invoke a model, send external messages or control production processes. The live smoke uses an isolated Dori home, archives its test thread and stops its runtime.
+Offline tests use an in-memory harness, a fake stdio app-server process and a fake Unix-WebSocket app-server, including JSON-RPC and CLI integration. They do not invoke a model, send external messages or control production processes. The live smoke uses an isolated owned Dori home, archives its test thread and stops its runtime; it does not validate shared mode.
 
 ## Keep upstream
 
