@@ -4,8 +4,12 @@ import { acquireFileLease } from "./lock.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateHome } from "./paths.ts";
+import type { MessengerOrigin } from "./messenger.ts";
 
 export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
+
+export type TaskOrigin = { kind: "codex"; threadId: string } | { kind: "messenger"; origin: MessengerOrigin } | { kind: "unknown" };
+export type Completion = { task: string; instance: string; revision: number; summary: string; decision: string; details: string[]; origin: TaskOrigin; at: number };
 
 export type Lane = {
   key: string;
@@ -16,15 +20,21 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  origin?: TaskOrigin;
+  completions?: Completion[];
+  title?: string;
+  direction?: string;
+  revision?: number;
+  instructions?: { revision: number; text: string; at: number; status: "queued" | "delivered" | "acknowledged"; acknowledgedAt?: number; message?: QueuedMessage; sourceEvent?: string }[];
   kickoffPending?: boolean;
   lastInstructionBatch?: string;
-  final?: { text: string; evidence: string[]; at: number };
+  final?: { text: string; evidence: string[]; at: number; revision?: number };
   log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
 };
 
-export type Role = "lead" | "duty";
+export type Role = "lead" | "duty" | "conversation";
 
-export type QueuedMessage = { id?: string; at: number; from: string; text: string };
+export type QueuedMessage = { id?: string; at: number; from: string; text: string; mode?: "steer"; revision?: number };
 export type InboxBatch = { id: string; offset: number; messages: QueuedMessage[] };
 
 export type ReviewReceipt = {
@@ -111,6 +121,13 @@ export class Store {
 
   saveLane(lane: Lane): void {
     checkedId(lane.key);
+    const previous = this.lane(lane.key);
+    if (previous?.threadId === lane.threadId && previous.origin && JSON.stringify(previous.origin) !== JSON.stringify(lane.origin)) throw new Error("task origin is immutable after allocation");
+    for (const receipt of previous?.completions ?? []) if (!(lane.completions ?? []).some(r => JSON.stringify(r) === JSON.stringify(receipt))) throw new Error("committed completion history must be retained");
+    for (const receipt of lane.completions ?? []) {
+      if ((previous?.completions ?? []).some(r => JSON.stringify(r) === JSON.stringify(receipt))) continue;
+      if (lane.status !== "done" || receipt.task !== lane.key || receipt.instance !== lane.threadId || receipt.revision !== (lane.revision ?? 1) || receipt.revision !== (lane.final?.revision ?? 1) || receipt.summary !== lane.final?.text || JSON.stringify(receipt.details) !== JSON.stringify(lane.final?.evidence) || JSON.stringify(receipt.origin) !== JSON.stringify(lane.origin ?? { kind: "unknown" })) throw new Error("completion receipt requires the same atomic DONE record");
+    }
     this.writeJson(join(this.root, "lanes", `${lane.key}.json`), lane);
   }
 
@@ -158,13 +175,17 @@ export class Store {
     try { lease.set(role, threadId); } finally { lease.release(); }
   }
 
-  lockRoles(): { set(role: Role, threadId: string): void; release(): void } | undefined {
+  lockRoles(): { set(role: Role, threadId: string): void; setMany(roles: Partial<Record<Role, string>>): void; release(): void } | undefined {
     const lease = acquireFileLease(join(this.root, "roles.lock"));
     if (!lease) return;
     return {
       set: (role, threadId) => {
         if (!lease.holds()) throw new Error("role ownership changed during startup");
         this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: threadId });
+      },
+      setMany: (roles) => {
+        if (!lease.holds()) throw new Error("role ownership changed during startup");
+        this.writeJson(join(this.root, "roles.json"), { ...this.roles(), ...roles });
       },
       release: lease.release,
     };
@@ -181,6 +202,17 @@ export class Store {
 
   enqueue(threadId: string, msg: QueuedMessage): void {
     appendFileSync(this.inboxPath(threadId), JSON.stringify(msg) + "\n", { mode: 0o600 });
+  }
+
+  /** Caller owns its producer lock. Includes acknowledged history to prevent crash replay. */
+  enqueueOnce(threadId: string, msg: QueuedMessage & { id: string }): void {
+    const p = this.inboxPath(threadId);
+    const previous = existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l) as QueuedMessage).find(m => m.id === msg.id) : undefined;
+    if (previous) {
+      if (JSON.stringify(previous) !== JSON.stringify(msg)) throw new Error("inbox message identity conflict");
+      return;
+    }
+    this.enqueue(threadId, msg);
   }
 
   queued(threadId: string): QueuedMessage[] {

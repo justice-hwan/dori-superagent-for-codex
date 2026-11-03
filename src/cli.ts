@@ -10,17 +10,28 @@ import { serve } from "./runtime.ts";
 import { checkUpstream } from "./upstream.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import type { Role } from "./store.ts";
+import { MessengerJournal, sendMessenger, type MessengerConfig, type MessengerOrigin } from "./messenger.ts";
 import { connection, readConnection, type Connection } from "./connection.ts";
+import { acknowledge, findTasks, pivot, taskDocument, taskFor, revisionOf } from "./tasks.ts";
+import { acknowledgeNotice, deliverExternalNotice, flushNotices, notices, recordNotice } from "./notifications.ts";
 
 const USAGE = `dori-codex - a local multi-session harness on Codex app-server
 
   dori-codex up [--cwd DIR]                         start local runtime + lead/duty threads (no model turn)
   dori-codex up --connect ws+unix:///PATH --lead THREAD   attach existing loaded chat as external lead
+  dori-codex up --split                            keep this chat as conversation, allocate internal work lead
+  dori-codex task find [TEXT] | show KEY | document KEY
+  dori-codex pivot KEY --text T [--expected-revision N]   revise and steer running owned work
+  dori-codex ack KEY --instance THREAD --revision N                  worker acknowledges current direction
+  dori-codex messenger status | bind KEY --origin FILE | reply KEY --config FILE --id ID --text T
+  dori-codex messenger report NOTICE --config FILE | reconcile ID --delivered true|false [--message ID]
+  dori-codex notifications list | flush | ack ID    compact durable conversation reports
+  dori-codex notify KEY --kind decision|failure --text T [--decision Q]
   dori-codex up --owned                            explicitly select owned stdio mode while stopped
-  dori-codex role <lead|duty> [THREAD]                register an existing Dori-owned thread
-  dori-codex start <key> --brief FILE [--cwd DIR]   start a Codex thread from a brief + lane rules
-  dori-codex report <key> --text T [--status working|waiting]
-  dori-codex ready <key> --text T --evidence LINK [--evidence LINK ...]
+  dori-codex role <lead|duty|conversation> [THREAD]                register an existing Dori-owned thread
+  dori-codex start <key> --brief FILE [--cwd DIR] [--origin FILE]   start a Codex thread from a brief + lane rules
+  dori-codex report <key> [--instance THREAD] [--revision N] --text T [--status working|waiting]
+  dori-codex ready <key> [--instance THREAD] [--revision N] --text T --evidence LINK [--evidence LINK ...]
   dori-codex send <lead|duty|key|thread> --text T     deliver now, or queue until the thread is idle
   dori-codex duty stop [--text WHY] | resume | status   pause/resume the duty loop
   dori-codex duty [--once] [--interval SECONDS]     flush inboxes, nudge idle lanes, escalate, detect lost lanes
@@ -32,7 +43,7 @@ const USAGE = `dori-codex - a local multi-session harness on Codex app-server
   dori-codex backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
   dori-codex review <owner/repo#N> [--model M]      fresh Codex reviewer at the exact head -> receipt
   dori-codex merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> merge commit
-  dori-codex done <key>                             lead closes a READY lane
+  dori-codex done <key> [--instance THREAD]          lead closes a READY lane
   dori-codex status                            local registry (works while stopped)
   dori-codex read <lead|key|thread>             latest assistant output
   dori-codex interrupt <lead|key|thread>        interrupt an owned turn
@@ -75,18 +86,32 @@ async function textOf(a: Args): Promise<string> {
   return (await Bun.stdin.text()).trim();
 }
 
-async function up(d: Deps, cwd: string, autoLoop: boolean, selected: Connection): Promise<void> {
+async function up(d: Deps, cwd: string, autoLoop: boolean, selected: Connection, split = false): Promise<void> {
   const lease = d.store.lockRoles();
   if (!lease) throw new Refusal("role startup or registration is busy; retry after it finishes");
   try {
   const currentLead = d.store.roles().lead;
-  if (selected.mode === "shared" && currentLead && currentLead !== selected.lead) throw new Refusal("lead already registered; replacement refused (use a separate DORI_HOME)");
+  if (selected.mode === "shared" && currentLead && currentLead !== selected.lead && d.store.roles().conversation !== selected.lead) throw new Refusal("lead already registered; replacement refused (use a separate DORI_HOME)");
+  if (split && selected.mode !== "shared") throw new Refusal("--split requires an explicitly attached existing conversation");
+  if (selected.mode === "owned" && d.store.roles().conversation) throw new Refusal("split conversation registered; use its shared connection or a separate DORI_HOME");
   if (selected.mode === "owned" && currentLead && d.sessions.isExternalLead?.(currentLead)) throw new Refusal("external lead registered; use a separate DORI_HOME for owned mode");
   await ensureRuntime(d.store.root, autoLoop, selected);
   if (selected.mode === "shared") {
     await new Sessions(d.store.root).call("registerExternalLead", { threadId: selected.lead });
-    lease.set("lead", selected.lead);
-    console.log(`UP lead=${selected.lead} duty=code mode=shared home=${d.store.root}`);
+    if (split || d.store.roles().conversation) {
+      const roles = d.store.roles();
+      if (roles.conversation && roles.conversation !== selected.lead) throw new Refusal("conversation replacement refused");
+      let workLead = roles.lead;
+      if (!workLead || workLead === selected.lead || await d.sessions.status(workLead) === "gone") {
+        const instructions = readFileSync(join(import.meta.dir, "..", "prompts", "work-lead.md"), "utf8").replaceAll("{{dori}}", d.doriCmd);
+        workLead = await d.sessions.create("업무 lead", cwd, instructions);
+      }
+      lease.setMany({ conversation: selected.lead, lead: workLead });
+      console.log(`UP conversation=${selected.lead} lead=${workLead} duty=code mode=shared split=true home=${d.store.root}`);
+    } else {
+      lease.set("lead", selected.lead);
+      console.log(`UP lead=${selected.lead} duty=code mode=shared home=${d.store.root}`);
+    }
     return;
   }
   for (const role of ROLES) {
@@ -101,7 +126,7 @@ async function up(d: Deps, cwd: string, autoLoop: boolean, selected: Connection)
 
 function status(d: Deps): void {
   const roles = d.store.roles();
-  console.log(`lead=${roles.lead ?? "-"} duty=${roles.duty ?? "-"} home=${d.store.root}`);
+  console.log(`conversation=${roles.conversation ?? "-"} lead=${roles.lead ?? "-"} duty=${roles.duty ?? "-"} home=${d.store.root}`);
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);
@@ -173,16 +198,18 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       const endpoint = one(a, "connect"), lead = one(a, "lead"), owned = one(a, "owned");
       if ((endpoint && !lead) || (lead && !endpoint) || (owned && (endpoint || lead))) throw new Refusal("use --connect ENDPOINT --lead THREAD together, or --owned");
       const selected = endpoint ? connection({ mode: "shared", endpoint, lead }) : owned ? connection({ mode: "owned" }) : readConnection(d.store.root);
-      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "auto-loop") === "true", selected);
+      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "auto-loop") === "true", selected, one(a, "split") === "true");
       return 0;
     }
     case "role": {
       const role = need(x, "role") as Role;
-      if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
+      if (![...ROLES, "conversation"].includes(role)) throw new Refusal(`role must be one of ${[...ROLES, "conversation"].join(", ")}`);
       const thread = need(a.pos[2], "thread id");
       const selected = readConnection(d.store.root);
       if (selected.mode === "shared" && (role === "lead" || thread === selected.lead)) throw new Refusal("external lead role is fixed by the shared connection; replacement refused");
       if (!d.sessions.known(thread)) throw new Refusal("role must refer to a Dori-owned thread");
+      if (role === "conversation" && !d.sessions.isExternalLead?.(thread)) throw new Refusal("conversation must be the protected attached chat");
+      if (role === "lead" && d.store.roles().conversation === thread) throw new Refusal("work lead must differ from the conversation");
       d.store.setRole(role, thread);
       console.log(`ROLE ${role}=${thread}`);
       return 0;
@@ -190,19 +217,72 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "start": {
       const lane = await startLane(d, need(x, "lane key"), need(one(a, "brief"), "--brief"), {
         cwd: one(a, "cwd"),
+        origin: one(a, "origin") ? JSON.parse(readFileSync(one(a, "origin")!, "utf8")) : undefined,
       });
       console.log(`STARTED ${lane.key} thread=${lane.threadId} brief=${lane.brief}`);
+      return 0;
+    }
+    case "messenger": {
+      const journal = new MessengerJournal(d.store.root);
+      if (x === undefined || x === "status") { console.log(JSON.stringify({ bindings: journal.bindings(), inbound: journal.inbound(), outgoing: journal.outgoing() }, null, 2)); return 0; }
+      if (x === "bind") {
+        const lane = taskFor(d, need(a.pos[2], "task selector")), origin = JSON.parse(readFileSync(need(one(a, "origin"), "--origin FILE"), "utf8"));
+        // New tasks already capture their route at allocation. This command can
+        // confirm that binding, never retarget a task after admission.
+        journal.bindTask(lane.threadId, origin); console.log(`BOUND ${lane.key}`); return 0;
+      }
+      if (x === "reconcile") { const delivered = one(a, "delivered"); if (delivered !== "true" && delivered !== "false") throw new Refusal("inspect platform history then supply --delivered true|false"); journal.reconcile(need(a.pos[2], "delivery id"), delivered === "true", one(a, "message")); console.log("RECONCILED"); return 0; }
+      if (x === "report" || x === "reply") {
+        // Read explicit configuration only at the user's requested send command.
+        const config = JSON.parse(readFileSync(need(one(a, "config"), "--config FILE"), "utf8")) as MessengerConfig & { account: string; workspace?: string };
+        if (x === "report") console.log(`SENT ${await deliverExternalNotice(d, need(a.pos[2], "notice id"), config)}`);
+        else {
+          const lane = taskFor(d, need(a.pos[2], "task selector")), origin = journal.origin(lane.threadId), text = await textOf(a);
+          if (!origin || config.platform !== origin.platform || config.account !== origin.account || config.workspace !== origin.workspace) throw new Refusal("configured messenger does not match the captured task origin");
+          const receipt = await journal.reply(lane.threadId, need(one(a, "id"), "--id stable-delivery-id"), text, route => sendMessenger({ ...config, ...route, text }));
+          console.log(`SENT ${receipt.messageId}`);
+        }
+        return 0;
+      }
+      throw new Refusal("use messenger status, bind KEY --origin FILE, reply KEY --config FILE --id ID, report NOTICE --config FILE, reconcile ID");
+    }
+    case "task": {
+      if (x === "find" || x === "list" || x === undefined) console.log(JSON.stringify(findTasks(d, a.pos.slice(2).join(" ")).map(l => ({ key: l.key, title: l.title, threadId: l.threadId, status: l.status, revision: revisionOf(l), direction: l.direction, latestInstruction: l.instructions?.at(-1) })), null, 2));
+      else if (x === "show") console.log(JSON.stringify(taskFor(d, need(a.pos[2], "task selector")), null, 2));
+      else if (x === "document") console.log(taskDocument(taskFor(d, need(a.pos[2], "task selector"), true)));
+      else throw new Refusal("use task find [TEXT], show KEY or document KEY");
+      return 0;
+    }
+    case "pivot": {
+      const lane = await pivot(d, need(x, "task selector"), await textOf(a), one(a, "expected-revision") === undefined ? undefined : Number(one(a, "expected-revision")));
+      console.log(`PIVOT ${lane.key} revision=${revisionOf(lane)} state=${lane.instructions?.at(-1)?.status}`); return 0;
+    }
+    case "ack": {
+      const lane = acknowledge(d, need(x, "task key"), Number(need(one(a, "revision"), "--revision")), one(a, "instance"));
+      console.log(`ACK ${lane.key} revision=${revisionOf(lane)}`); return 0;
+    }
+    case "notify": {
+      const lane = taskFor(d, need(x, "task selector")), kind = one(a, "kind");
+      if (kind !== "decision" && kind !== "failure") throw new Refusal("notify --kind must be decision or failure; verified completions are collected from done");
+      recordNotice(d, { task: lane.key, instance: lane.threadId, revision: revisionOf(lane), kind, summary: await textOf(a), decision: one(a, "decision") ?? "", details: a.flags.get("evidence") ?? [] });
+      await flushNotices(d); console.log(`NOTIFIED ${lane.key} (submission and lead acknowledgement are separate)`); return 0;
+    }
+    case "notifications": {
+      if (x === "flush") { console.log(await flushNotices(d, true) ? "SUBMITTED" : "QUEUED"); }
+      else if (x === "ack") { acknowledgeNotice(d, need(a.pos[2], "batch or notice id")); console.log("ACKNOWLEDGED"); }
+      else if (x === undefined || x === "list") console.log(JSON.stringify(notices(d), null, 2));
+      else throw new Refusal("use notifications list, flush or ack ID");
       return 0;
     }
     case "report": {
       const st = one(a, "status");
       if (st && st !== "working" && st !== "waiting") throw new Refusal("--status must be working or waiting");
-      await report(d, need(x, "lane key"), await textOf(a), st as "working" | "waiting" | undefined);
+      await report(d, need(x, "lane key"), await textOf(a), st as "working" | "waiting" | undefined, one(a, "revision") === undefined ? undefined : Number(one(a, "revision")), one(a, "instance"));
       console.log(`REPORTED ${x}`);
       return 0;
     }
     case "ready":
-      await ready(d, need(x, "lane key"), await textOf(a), a.flags.get("evidence") ?? []);
+      await ready(d, need(x, "lane key"), await textOf(a), a.flags.get("evidence") ?? [], one(a, "revision") === undefined ? undefined : Number(one(a, "revision")), one(a, "instance"));
       console.log(`READY ${x}`);
       return 0;
     case "send":
@@ -310,7 +390,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     }
     case "done":
-      await done(d, need(x, "lane key"));
+      await done(d, need(x, "lane key"), one(a, "instance"));
       console.log(`DONE ${x}`);
       return 0;
     case "status":

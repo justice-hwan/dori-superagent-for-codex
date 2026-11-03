@@ -301,7 +301,7 @@ export class Runtime {
     return s.status;
   }
 
-  async deliver(id: string, text: string, deliveryId?: string): Promise<void> {
+  async deliver(id: string, text: string, deliveryId?: string, steerActive = false): Promise<void> {
     if (this.stopping) throw new Error("runtime is stopping");
     if (!text.trim()) throw new Error("message must not be empty");
     if (this.isExternalLead(id)) return this.deliverExternal(id, text, deliveryId);
@@ -313,6 +313,7 @@ export class Runtime {
     try {
       if (this.codex.shared) await this.refreshShared(s); else await this.resume(s);
       if (this.stopping) throw new Error("runtime is stopping; message not submitted");
+      if (steerActive && s.status === "working") return await this.steerOwned(s, text, deliveryId);
       if (s.status !== "idle" && s.status !== "done" && s.status !== "failed" && s.status !== "recovery") throw new Error(`thread is ${s.status}; message not submitted`);
       const clientId = deliveryId ?? (this.codex.shared ? randomUUID() : undefined);
       s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.requiresRecovery = false; s.everStarted = true; s.pendingDeliveryId = clientId;
@@ -339,6 +340,29 @@ export class Runtime {
         s.status = "unknown"; s.uncertainDelivery = true; this.save(s); throw e;
       } finally { this.submitting.delete(id); if (this.codex.shared) this.admitDeferredRequests(s); }
     } finally { this.busy.delete(id); }
+  }
+
+  async steer(id: string, text: string, deliveryId: string): Promise<void> {
+    if (!deliveryId) throw new Error("steering requires a stable inbox batch id");
+    return this.deliver(id, text, deliveryId, true);
+  }
+
+  private async steerOwned(s: Session, text: string, deliveryId?: string): Promise<void> {
+    if (!deliveryId) throw new Error("steering requires a stable inbox batch id");
+    const turnId = this.codex.shared ? s.ownedTurnId : s.turnId;
+    if (!turnId || turnId !== s.turnId || s.uncertainDelivery) throw new DeliveryDeferred();
+    s.pendingDeliveryId = deliveryId; s.uncertainDelivery = true; this.save(s);
+    try {
+      const r = await this.codex.request("turn/steer", { threadId: s.id, expectedTurnId: turnId, input: [{ type: "text", text, text_elements: [] }], clientUserMessageId: deliveryId });
+      if (r.turnId !== turnId) throw new Error("steered turn identity is unconfirmed");
+      s.lastDeliveryId = deliveryId; s.pendingDeliveryId = undefined; s.uncertainDelivery = false;
+      this.save(s);
+    } catch (e) {
+      if (e instanceof CodexRpcError && e.turnRace) {
+        s.uncertainDelivery = false; s.pendingDeliveryId = undefined; s.status = "unknown"; this.save(s); throw new DeliveryDeferred();
+      }
+      s.status = "unknown"; s.uncertainDelivery = true; this.save(s); throw e;
+    }
   }
 
   private async deliverExternal(id: string, text: string, deliveryId?: string): Promise<void> {
@@ -627,6 +651,7 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
           case "create": value = await runtime!.create(a.name, a.cwd, a.instructions, a.model, a.readOnly === true); break;
           case "status": value = await runtime!.status(a.threadId); break;
           case "deliver": value = await runtime!.deliver(a.threadId, a.text, a.deliveryId); break;
+          case "steer": value = await runtime!.steer(a.threadId, a.text, a.deliveryId); break;
           case "read": value = runtime!.sessions.get(a.threadId)?.output ?? ""; break;
           case "interrupt": value = await runtime!.interrupt(a.threadId); break;
           case "reconcile": if (typeof a.delivered !== "boolean") throw new Error("delivered must be a boolean"); value = await runtime!.reconcile(a.threadId, a.delivered); break;

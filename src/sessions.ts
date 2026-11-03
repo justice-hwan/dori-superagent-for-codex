@@ -11,6 +11,7 @@ export interface SessionRuntime {
   create(name: string, cwd: string, instructions: string, model?: string): Promise<string>;
   status(threadId: string): Promise<AgentStatus>;
   deliver(threadId: string, text: string, deliveryId?: string): Promise<void>;
+  steer?(threadId: string, text: string, deliveryId: string): Promise<void>;
   read(threadId: string): Promise<string>;
   close(threadId: string): Promise<void>;
   review(text: string, cwd: string, model?: string): Promise<string>;
@@ -43,6 +44,7 @@ export class Sessions implements SessionRuntime {
   create(name: string, cwd: string, instructions: string, model?: string): Promise<string> { return this.call("create", { name, cwd, instructions, model }); }
   status(threadId: string): Promise<AgentStatus> { return this.call("status", { threadId }); }
   async deliver(threadId: string, text: string, deliveryId?: string): Promise<void> { await this.call("deliver", { threadId, text, deliveryId }); }
+  async steer(threadId: string, text: string, deliveryId: string): Promise<void> { await this.call("steer", { threadId, text, deliveryId }); }
   read(threadId: string): Promise<string> { return this.call("read", { threadId }); }
   async close(threadId: string): Promise<void> { await this.call("close", { threadId }); }
   review(text: string, cwd: string, model?: string): Promise<string> { return this.call("review", { text, cwd, model }); }
