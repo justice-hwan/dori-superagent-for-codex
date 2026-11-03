@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, lstatSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 
 export type ReviewSnapshot = { cwd: string; diffPath: string; metadataPath: string; reportPath: string };
 
@@ -28,6 +28,27 @@ export async function prepareReviewSnapshot(home: string, repo: string, pr: stri
   for (const { path } of entries) {
     for (let p = dirname(path); p !== "."; p = dirname(p)) if (paths.has(p)) throw new Error("review tree contains a file/symlink as a parent directory");
   }
+  const links = new Map<string, string>();
+  for (const { mode, oid, path } of entries) {
+    if (mode !== "120000") continue;
+    const blob = git("cat-file", "blob", oid), link = blob.toString("utf8");
+    if (!Buffer.from(link).equals(blob) || !link || link.includes("\0") || isAbsolute(link)) throw new Error("review snapshot contains an unsupported or escaping symlink");
+    links.set(path, link);
+  }
+  for (const [path, link] of links) {
+    const parts = path.split("/").slice(0, -1), pending = link.split("/"); let expansions = 0;
+    while (pending.length) {
+      const part = pending.shift()!;
+      if (!part || part === ".") continue;
+      if (part === "..") { if (!parts.length) throw new Error("review snapshot symlink escapes frozen source"); parts.pop(); continue; }
+      parts.push(part);
+      const chained = links.get(parts.join("/"));
+      if (chained !== undefined) {
+        if (++expansions > 64) throw new Error("review snapshot contains a cyclic or excessive symlink chain");
+        parts.pop(); pending.unshift(...chained.split("/"));
+      }
+    }
+  }
   for (const { mode, oid, path } of entries) {
     const target = join(cwd, path);
     let parent = cwd;
@@ -37,7 +58,7 @@ export async function prepareReviewSnapshot(home: string, repo: string, pr: stri
       if (!lstatSync(parent).isDirectory()) throw new Error("review tree parent is not a real directory");
     }
     const blob = git("cat-file", "blob", oid);
-    if (mode === "120000") { const link = blob.toString("utf8"); if (!Buffer.from(link).equals(blob)) throw new Error("unsupported non-UTF8 symlink"); symlinkSync(link, target); }
+    if (mode === "120000") symlinkSync(links.get(path)!, target);
     else writeFileSync(target, blob, { mode: mode === "100755" ? 0o700 : 0o600, flag: "wx" });
   }
   const diff = git("diff", "--no-ext-diff", "--no-textconv", "--binary", `${base}...${head}`);

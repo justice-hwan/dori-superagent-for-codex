@@ -9,7 +9,8 @@
     "test": "bun test ./test/",
     "typecheck": "tsc --noEmit",
     "check:boundaries": "bun scripts/check-boundaries.ts",
-    "smoke:live": "bun scripts/smoke-live.ts"
+    "smoke:live": "bun scripts/smoke-live.ts",
+    "smoke:lane": "bun scripts/smoke-lane.ts"
   },
   "devDependencies": { "@types/bun": "^1.3.0", "typescript": "^5.9.0" },
   "engines": { "bun": ">=1.3" }

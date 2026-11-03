@@ -73,14 +73,18 @@ async function textOf(a: Args): Promise<string> {
 }
 
 async function up(d: Deps, cwd: string, autoLoop: boolean): Promise<void> {
+  const lease = d.store.lockRoles();
+  if (!lease) throw new Refusal("role startup or registration is busy; retry after it finishes");
+  try {
   await ensureRuntime(d.store.root, autoLoop);
   for (const role of ROLES) {
     const old = d.store.roles()[role];
     if (old && await d.sessions.status(old) !== "gone") continue;
     const instructions = readFileSync(join(import.meta.dir, "..", "prompts", `${role}.md`), "utf8").replaceAll("{{dori}}", d.doriCmd);
-    d.store.setRole(role, await d.sessions.create(role, cwd, instructions));
+    lease.set(role, await d.sessions.create(role, cwd, instructions));
   }
   console.log(`UP lead=${d.store.roles().lead} duty=${d.store.roles().duty} home=${d.store.root}`);
+  } finally { lease.release(); }
 }
 
 function status(d: Deps): void {

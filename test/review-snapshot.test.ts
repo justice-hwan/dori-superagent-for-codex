@@ -75,3 +75,21 @@ test("a historical confirmed integration cannot bypass a retargeted PR's new rec
     expect(w.calls.some(c => c.cmd === "git")).toBe(false);
   } finally { rmSync(d.store.root, { recursive: true, force: true }); }
 });
+
+test("review snapshots reject absolute, relative and transitive symlink escapes, preserving contained links", async () => {
+  const { symlinkSync } = await import("node:fs");
+  for (const variant of ["absolute", "relative", "chained", "contained"] as const) {
+    const root = mkdtempSync(join(tmpdir(), "dori-symlink-review-"));
+    const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    try {
+      git("init", "-q"); writeFileSync(join(root, "inside.txt"), "frozen marker\n"); git("add", "."); git("commit", "-qm", "base"); const base = git("rev-parse", "HEAD");
+      symlinkSync(variant === "absolute" ? "/tmp/unreviewed-source" : variant === "relative" ? "../../outside" : variant === "chained" ? "directory-link/../outside" : "inside.txt", join(root, "source.ts"));
+      if (variant === "chained") symlinkSync(".", join(root, "directory-link"));
+      git("add", "."); git("commit", "-qm", "links"); const head = git("rev-parse", "HEAD");
+      if (variant === "contained") {
+        const snapshot = await prepareReviewSnapshot(join(root, "state"), root, "o/r#1", head, base);
+        expect(readFileSync(join(snapshot.cwd, "source.ts"), "utf8")).toBe("frozen marker\n");
+      } else await expect(prepareReviewSnapshot(join(root, "state"), root, "o/r#1", head, base)).rejects.toThrow(/symlink/);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  }
+});

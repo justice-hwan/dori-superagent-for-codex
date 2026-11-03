@@ -298,3 +298,38 @@ test("send reports its own message, discards cursor-covered batches, and never r
     expect(delivered).toEqual(["new input"]); expect(d.store.queued("lead")).toEqual([]);
   }
 });
+
+test("normal sessions receive only scoped state/socket policy while reviewer project instructions stay disabled on start and resume", async () => {
+  const root = home(), requests: { method: string; params: any }[] = []; let count = 0;
+  const c = mock(async (method, params) => {
+    requests.push({ method, params });
+    if (method === "thread/start") return { thread: { id: `policy-${++count}` } };
+    if (method === "thread/resume") return { thread: { status: { type: "idle" } } };
+    return {};
+  });
+  const r = new Runtime(root, c);
+  const normal = await r.create("normal", root, "fixture"), reviewer = await r.create("review", root, "fixture", undefined, true);
+  const { stateHome } = await import("../src/paths.ts"), { socketPath } = await import("../src/sessions.ts");
+  const allowedHome = stateHome(root);
+  for (const call of requests.filter(r => r.method === "thread/start")) {
+    if (call.params.cwd !== allowedHome) throw new Error("cwd was not canonical");
+    if (call.params.sandbox === "read-only") {
+      expect(call.params.config.project_doc_max_bytes).toBe(0);
+      expect(call.params.config.projects[allowedHome].trust_level).toBe("untrusted");
+      expect(call.params.config.default_permissions).toBeUndefined();
+    } else {
+      const profile = call.params.config.permissions.dori_codex;
+      expect(profile.filesystem).toEqual({ [allowedHome]: "write" });
+      expect(profile.network.domains).toEqual({});
+      expect(profile.network.unix_sockets[socketPath(allowedHome)]).toBe("allow");
+      expect(Object.keys(profile.network.unix_sockets).length).toBeLessThanOrEqual(2);
+      expect(call.params.config.features.network_proxy.domains).toEqual({});
+    }
+  }
+  const restarted = new Runtime(root, c); await restarted.status(normal); await restarted.status(reviewer);
+  const resumed = requests.filter(r => r.method === "thread/resume");
+  expect(resumed).toHaveLength(2);
+  expect(resumed.find(r => r.params.threadId === reviewer)?.params.config.project_doc_max_bytes).toBe(0);
+  expect(resumed.find(r => r.params.threadId === reviewer)?.params.sandbox).toBe("read-only");
+  expect(resumed.find(r => r.params.threadId === normal)?.params.config.permissions.dori_codex.filesystem).toEqual({ [allowedHome]: "write" });
+});

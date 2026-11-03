@@ -153,7 +153,21 @@ export class Store {
   }
 
   setRole(role: Role, threadId: string): void {
-    this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: threadId });
+    const lease = this.lockRoles();
+    if (!lease) throw new Error("role startup or registration is busy; retry after it finishes");
+    try { lease.set(role, threadId); } finally { lease.release(); }
+  }
+
+  lockRoles(): { set(role: Role, threadId: string): void; release(): void } | undefined {
+    const lease = acquireFileLease(join(this.root, "roles.lock"));
+    if (!lease) return;
+    return {
+      set: (role, threadId) => {
+        if (!lease.holds()) throw new Error("role ownership changed during startup");
+        this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: threadId });
+      },
+      release: lease.release,
+    };
   }
 
   briefPath(key: string): string {

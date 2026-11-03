@@ -69,17 +69,28 @@ export class Codex {
         child.once("exit", finish);
       });
     };
-    const groupAlive = (): boolean => {
-      if (process.platform === "win32") return !exited();
-      try { process.kill(-child.pid!, 0); }
-      catch (e) { if ((e as NodeJS.ErrnoException).code === "ESRCH") return false; throw e; }
+    const activeMembers = (): boolean => {
       // A reparented zombie has no executable work left and cannot be killed again.
       const rows = execFileSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8", timeout: 1000, maxBuffer: 8 * 1024 * 1024 });
       return rows.split("\n").some((line) => { const [group, status] = line.trim().split(/\s+/); return Number(group) === child.pid && status && !status.startsWith("Z"); });
     };
+    const groupAlive = (): boolean => {
+      if (process.platform === "win32") return !exited();
+      if (!activeMembers()) return false;
+      try { process.kill(-child.pid!, 0); }
+      catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ESRCH" || (code === "EPERM" && !activeMembers())) return false;
+        throw e; // A permission failure for active work is still unconfirmed shutdown.
+      }
+      return true;
+    };
     const signalGroup = (signal: NodeJS.Signals) => {
       try { if (process.platform === "win32") child.kill(signal); else process.kill(-child.pid!, signal); }
-      catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
+      catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code !== "ESRCH" && !(process.platform !== "win32" && code === "EPERM" && !activeMembers())) throw e;
+      }
     };
     const waitGroup = async (ms: number) => {
       const until = Date.now() + ms;

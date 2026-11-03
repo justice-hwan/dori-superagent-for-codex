@@ -161,3 +161,32 @@ test("a blocked review retains its deadline, interrupts and archives on timeout"
   expect(reviewer).toMatchObject({ closed: true, status: "gone", lastTurnStatus: "interrupted" });
   expect(r.requests.size).toBe(0);
 });
+
+test("disconnect verifies no active group members without requiring signal permission on an empty group", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dori-empty-group-"));
+  const codex = new Codex([process.execPath, join(import.meta.dir, "fixtures/fake-codex.ts")]);
+  const nativeKill = process.kill; let probes = 0;
+  try {
+    await codex.connect();
+    process.kill = ((pid: number, signal: any) => {
+      if (pid < 0 && signal === 0) { probes++; throw Object.assign(new Error("probe denied"), { code: "EPERM" }); }
+      return nativeKill(pid, signal);
+    }) as typeof process.kill;
+    await codex.disconnect(); expect(probes).toBe(0);
+  } finally { process.kill = nativeKill; await codex.disconnect(); rmSync(home, { recursive: true, force: true }); }
+});
+
+test("a permission failure for active group work retains ownership and reports unconfirmed", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dori-active-group-")), pidFile = join(home, "pid");
+  const codex = new Codex([process.execPath, join(import.meta.dir, "fixtures/stubborn-codex.ts"), pidFile]);
+  const nativeKill = process.kill;
+  try {
+    await codex.connect();
+    process.kill = ((pid: number, signal: any) => {
+      if (pid < 0 && signal === 0) throw Object.assign(new Error("active probe denied"), { code: "EPERM" });
+      return nativeKill(pid, signal);
+    }) as typeof process.kill;
+    await expect(codex.disconnect()).rejects.toThrow("active probe denied");
+    expect(nativeKill(Number(readFileSync(pidFile, "utf8")), 0)).toBe(true);
+  } finally { process.kill = nativeKill; await codex.disconnect(); rmSync(home, { recursive: true, force: true }); }
+}, 8000);

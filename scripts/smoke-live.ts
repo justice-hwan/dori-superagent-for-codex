@@ -25,6 +25,7 @@ try {
   if (store.queued(id!).length) throw new Error("Smoke inbox was not acknowledged");
   await sessions.call("shutdown");
   for (let n = 0; n < 100 && existsSync(socketPath(home)); n++) await Bun.sleep(50);
+  if (existsSync(socketPath(home)) || existsSync(join(home, "runtime.lock"))) throw new Error("Smoke shutdown remains unconfirmed; inspect the retained runtime before restarting");
   await ensureRuntime(home);
   if (!["idle", "done"].includes(await sessions.status(id!)) || (await sessions.read(id!)).trim() !== output) throw new Error("Used thread did not resume after runtime restart");
   console.log(JSON.stringify({ marker: output, status, resumed: true, threadId: id, home }));
@@ -35,4 +36,6 @@ try {
     if (status === "done" || status === "idle") await sessions.close(id).catch(() => {});
   }
   await sessions.call("shutdown").catch(() => {});
+  for (let n = 0; n < 100 && (existsSync(socketPath(home)) || existsSync(join(home, "runtime.lock"))); n++) await Bun.sleep(100);
+  if (existsSync(socketPath(home)) || existsSync(join(home, "runtime.lock"))) throw new Error(`Smoke cleanup shutdown unconfirmed: ${home}`);
 }

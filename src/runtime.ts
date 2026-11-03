@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { Codex, type RpcMessage } from "./codex.ts";
 import { socketPath, validThread, type AgentStatus } from "./sessions.ts";
 import { acquireFileLease } from "./lock.ts";
@@ -54,15 +54,28 @@ export class Runtime {
     return s;
   }
 
+  private policy(cwd: string, readOnly = false): Record<string, unknown> {
+    if (readOnly) return { sandbox: "read-only", config: { project_doc_max_bytes: 0, projects: { [stateHome(cwd)]: { trust_level: "untrusted" } } } };
+    const socket = socketPath(this.home);
+    const canonicalSocket = join(stateHome(dirname(socket)), basename(socket));
+    const unixSockets = Object.fromEntries([...new Set([socket, canonicalSocket])].map(path => [path, "allow"]));
+    return { config: {
+      default_permissions: "dori_codex",
+      permissions: { dori_codex: { extends: ":workspace", filesystem: { [this.home]: "write" }, network: { enabled: true, domains: {}, unix_sockets: unixSockets } } },
+      features: { network_proxy: { enabled: true, domains: {}, proxy_url: "http://127.0.0.1:0", enable_socks5: false } },
+    } };
+  }
+
   async create(name: string, cwd: string, instructions: string, model?: string, readOnly = false): Promise<string> {
     if (this.stopping) throw new Error("runtime is stopping");
+    cwd = stateHome(cwd);
     const r = await this.codex.request("thread/start", {
-      cwd: resolve(cwd), developerInstructions: instructions,
-      approvalPolicy: "on-request", sandbox: readOnly ? "read-only" : "workspace-write", ...(model ? { model } : {}),
+      cwd, developerInstructions: instructions,
+      approvalPolicy: "on-request", ...this.policy(cwd, readOnly), ...(model ? { model } : {}),
     });
     const id = r.thread?.id;
     if (typeof id !== "string" || !validThread(id)) throw new Error("Codex returned no valid thread id");
-    const s: Session = { id, name, cwd: resolve(cwd), instructions, status: "idle", output: "", model, readOnly };
+    const s: Session = { id, name, cwd, instructions, status: "idle", output: "", model, readOnly };
     this.sessions.set(id, s); this.loaded.add(id); this.save(s);
     return id;
   }
@@ -81,8 +94,8 @@ export class Runtime {
     let r: any;
     try {
       r = await this.codex.request("thread/resume", {
-        threadId: s.id, cwd: s.cwd, developerInstructions: s.instructions,
-        approvalPolicy: "on-request", sandbox: s.readOnly ? "read-only" : "workspace-write", excludeTurns: true,
+        threadId: s.id, cwd: stateHome(s.cwd), developerInstructions: s.instructions,
+        approvalPolicy: "on-request", ...this.policy(s.cwd, s.readOnly), excludeTurns: true,
       });
     } catch (e) {
       // Codex does not persist an empty thread's rollout before its first turn.

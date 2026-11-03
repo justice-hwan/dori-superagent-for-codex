@@ -53,6 +53,8 @@ dori-codex done fix-login
 
 READY is a claim. The lead must inspect the evidence. A completed model turn does not automatically mark a lane READY or merge its PR. Reviews run in a separate read-only Codex thread against immutable raw Git source and diff, and bind receipts to the repository, head, base and base branch name. Run commands from a clone containing both commits. The full review and metadata are saved locally. Only a successful turn with an explicit VERDICT and unchanged target identity can produce a receipt.
 
+Review snapshots reject absolute or escaping symlinks, including transitive escapes. Reviewer threads suppress automatic project documentation and mark the snapshot untrusted, so its agent instructions and project hooks are reviewed as source.
+
 `merge` checks CI by the captured head SHA and creates a fixed merge commit whose two parents are exactly the reviewed base and head. It records that candidate before pushing, then uses an explicit expected-value lease on the base ref. A concurrent base change rejects the push; branch-protection rejection has no fallback. Retries verify the saved candidate on the remote before attempting another push. This integrates only the reviewed objects and preserves upstream ancestry. Only merge commits are supported.
 
 A PR head can move independently after the last query. Its newer commits cannot enter the fixed candidate. The command reports `INTEGRATED_REVIEWED_PAIR` until GitHub independently confirms the PR is merged at the reviewed head; it never closes a PR containing newer work. Git credentials use the existing authenticated `gh` helper. Missing checks, failed check commands, failures and all-skipped checks are refused.
@@ -91,6 +93,8 @@ A pending review question or approval remains available through `requests` while
 
 The runtime runs duty every 60 seconds. Pause future passes with `duty stop --text maintenance`, inspect with `duty status`, and resume with `duty resume`. This does not interrupt a turn already running; use `interrupt` for that. It nudges idle working lanes at 10 and 20 minutes and escalates at 40; WAITING/blocked work is left alone. A failure in one lane does not stop the others.
 
+Role lookup, creation and registration share a per-home startup lease. Concurrent `up` calls reuse the registered roles or report busy instead of replacing them.
+
 ```sh
 dori-codex backlog add task-one --brief ./brief.md --priority 2
 dori-codex loop --once
@@ -110,6 +114,8 @@ There is **no usage collector, install registration, analytics key or telemetry 
 
 This runtime starts its own app-server with the user's existing Codex configuration. It does not attach to the desktop app's live server. Automatic visibility or immediate refresh in the Codex desktop sidebar is not guaranteed; persisted thread IDs can be opened/resumed with compatible Codex clients.
 
+Normal threads use a per-thread workspace permission profile adding the private state directory and exact local Unix socket. A managed proxy uses an empty domain allowlist; this does not grant arbitrary command networking or change global configuration. Review threads retain their separate read-only policy. A stopping runtime is never reported ready; active-work permission failures retain ownership for inspection.
+
 ## Verify
 
 ```sh
@@ -118,6 +124,8 @@ bun run check:boundaries
 bun test ./test/
 # Explicit opt-in: uses the signed-in Codex model for one marker response.
 bun run smoke:live
+# Explicit opt-in: the model writes only a fixture project and executes report/ready.
+bun run smoke:lane
 ```
 
 Offline tests use an in-memory harness and a fake app-server process, including real JSON-RPC framing and Unix-socket CLI integration. They do not invoke a model, send external messages or control production processes. The live smoke uses an isolated Dori home, archives its test thread and stops its runtime.

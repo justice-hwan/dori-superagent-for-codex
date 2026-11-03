@@ -84,3 +84,26 @@ test("relative DORI_HOME in different project directories creates independent ru
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
+
+test("concurrent up calls cannot allocate duplicate lead or duty roles", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dori-up-race-"));
+  const env = { ...process.env, DORI_HOME: home, DORI_CODEX_BIN: join(import.meta.dir, "fixtures/fake-codex.ts") };
+  const run = async (...args: string[]) => {
+    const p = Bun.spawn([process.execPath, cli, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    return { code, out, err };
+  };
+  try {
+    const results = await Promise.all([run("up", "--cwd", home), run("up", "--cwd", home)]);
+    expect(results.some(r => r.code === 0)).toBe(true);
+    expect(results.every(r => r.code === 0 || r.err.includes("role startup or registration is busy"))).toBe(true);
+    const before = JSON.parse(readFileSync(join(home, "roles.json"), "utf8"));
+    expect((await run("up", "--cwd", home)).code).toBe(0);
+    expect(JSON.parse(readFileSync(join(home, "roles.json"), "utf8"))).toEqual(before);
+    const { readdirSync } = await import("node:fs");
+    expect(readdirSync(join(home, "sessions")).filter(f => f.endsWith(".json"))).toHaveLength(2);
+  } finally {
+    if (existsSync(join(home, "runtime.lock"))) await run("down");
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 15_000);
