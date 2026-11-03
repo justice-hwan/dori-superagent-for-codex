@@ -10,7 +10,8 @@ import { ensureRuntime } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
 import { report, send, flushInbox, type Deps } from "../src/harness.ts";
 
-type NativeThread = { id: string; name: string; status: { type: string; activeFlags?: string[] }; turns: { id: string; status: string }[] };
+type NativeTurn = { id: string; status: string; items: { type: string; id: string; clientId: string | null }[] };
+type NativeThread = { id: string; name: string; status: { type: string; activeFlags?: string[] }; turns: NativeTurn[] };
 class FakeSharedServer {
   readonly home = mkdtempSync(join(tmpdir(), "dori-shared-"));
   readonly path = join(this.home, "codex.sock");
@@ -35,7 +36,7 @@ class FakeSharedServer {
     });
   }
   thread(id: string, turnId?: string): NativeThread {
-    const t: NativeThread = { id, name: id === "native-lead" ? "🐶도리 studio" : id, status: turnId ? { type: "active", activeFlags: [] } : { type: "idle" }, turns: turnId ? [{ id: turnId, status: "inProgress" }] : [] };
+    const t: NativeThread = { id, name: id === "native-lead" ? "🐶도리 studio" : id, status: turnId ? { type: "active", activeFlags: [] } : { type: "idle" }, turns: turnId ? [{ id: turnId, status: "inProgress", items: [{ type: "userMessage", id: `native-message-${turnId}`, clientId: `native-client-${turnId}` }] }] : [] };
     this.threads.set(id, t); return t;
   }
   event(method: string, params: unknown, id?: string): void { for (const ws of this.peers) ws.send(JSON.stringify({ method, params, ...(id ? { id } : {}) })); }
@@ -56,17 +57,24 @@ class FakeSharedServer {
       case "thread/read": if (!t) fail("thread not found"); else ok({ thread: t }); return;
       case "thread/resume": if (!t) fail("thread not found"); else { if (t.status.type === "notLoaded") t.status = { type: "idle" }; ok({ thread: t }); } return;
       case "thread/turns/list": ok({ data: t?.turns.slice(0, p.limit), nextCursor: null }); return;
+      case "thread/items/list": ok({ data: t?.turns.find(turn => turn.id === p.turnId)?.items.map(item => ({ turnId: p.turnId, item, startedAtMs: null, completedAtMs: null })) ?? [], nextCursor: null }); return;
       case "turn/start": {
-        if (!t || t.status.type !== "idle") { fail("already has an active turn"); return; }
-        const turn = { id: `started-${++this.next}`, status: "inProgress" };
+        if (!t) { fail("thread not found"); return; }
+        const item = { type: "userMessage", id: `input-${++this.next}`, clientId: p.clientUserMessageId ?? null };
+        // The native API adds input to an active turn instead of creating another.
+        if (t.status.type === "active" && t.turns[0]?.status === "inProgress") { t.turns[0].items.push(item); ok({ turn: t.turns[0] }); return; }
+        if (t.status.type !== "idle") { fail("thread is not ready"); return; }
+        const turn = { id: `started-${++this.next}`, status: "inProgress", items: [item] };
         t.turns.unshift(turn); t.status = { type: "active", activeFlags: [] };
         ok({ turn }); this.event("turn/started", { threadId: t.id, turn }); return;
       }
       case "turn/steer": {
         if (!t || t.status.type !== "active" || t.turns[0]?.id !== p.expectedTurnId) { fail("expected turn id does not match current active turn"); return; }
+        t.turns[0]!.items.push({ type: "userMessage", id: `steered-${++this.next}`, clientId: p.clientUserMessageId ?? null });
         ok({ turnId: p.expectedTurnId }); return;
       }
       case "turn/interrupt": {
+        if (!t || t.status.type !== "active" || t.turns[0]?.id !== p.turnId || t.turns[0]?.status !== "inProgress") { fail("no active turn to interrupt"); return; }
         ok({});
         if (!t || this.interrupt === "ack") return;
         const turn = t.turns.find(t => t.id === p.turnId)!;
@@ -225,9 +233,10 @@ test("wrong steer response or disconnect leaves uncertainty and no automatic rep
 test("approval/input requests for external and unrelated chats are ignored; owned requests remain explicit", async () => {
   const { fake, runtime } = await setup();
   const id = await runtime.create("worker", fake.home, "fixture");
+  await runtime.deliver(id, "work", "approval-worker-batch");
   fake.event("item/commandExecution/requestApproval", { threadId: "native-lead" }, "external-request");
   fake.event("item/tool/requestUserInput", { threadId: "unrelated" }, "unrelated-request");
-  fake.event("item/tool/requestUserInput", { threadId: id }, "owned-request");
+  fake.event("item/tool/requestUserInput", { threadId: id, turnId: runtime.sessions.get(id)?.ownedTurnId }, "owned-request");
   await until(() => runtime.requests.size === 1);
   expect([...runtime.requests.keys()]).toEqual(["owned-request"]); expect(fake.replies).toHaveLength(0);
   await expect(runtime.answer("external-request", {})).rejects.toThrow("no longer pending");
@@ -287,6 +296,146 @@ test("native turns started on an owned thread are never interrupted as if Dori c
   await expect(runtime.interrupt(id)).rejects.toThrow("identity is unresolved");
   await runtime.shutdown(); expect(fake.count("turn/interrupt")).toBe(0);
 });
+
+test("exact persisted terminal outcomes release owned turn markers, including runtime reload", async () => {
+  for (const outcome of ["completed", "failed", "interrupted"]) {
+    const { fake, runtime } = await setup();
+    const id = await runtime.create(outcome, fake.home, "fixture"); await runtime.deliver(id, "work", `batch-${outcome}`);
+    const turn = fake.threads.get(id)!.turns[0]!;
+    expect(runtime.sessions.get(id)?.ownedTurnId).toBe(turn.id);
+    turn.status = outcome; fake.threads.get(id)!.status = { type: "idle" }; // Missed turn/completed.
+    await runtime.codex.disconnect();
+    const reloaded = new Runtime(fake.home, new Codex(fake.selected, 250), 1000, 40);
+    fixtures.find(f => f.runtime === runtime)!.runtime = reloaded;
+    expect(await reloaded.status(id)).toBe(outcome === "completed" ? "done" : outcome === "failed" ? "failed" : "idle");
+    expect(reloaded.sessions.get(id)?.ownedTurnId).toBeUndefined();
+    expect(reloaded.sessions.get(id)?.lastTurnId).toBe(turn.id);
+    await reloaded.shutdown(); expect(fake.count("turn/interrupt")).toBe(0);
+  }
+});
+
+test("turn/start racing a native turn accepts input without claiming or interrupting native creation", async () => {
+  const { fake, runtime } = await setup();
+  const id = await runtime.create("native-race", fake.home, "fixture");
+  let raced = false;
+  fake.hook = m => {
+    if (m.method !== "turn/start" || raced) return false;
+    raced = true; fake.thread(id, "native-created-before-admission"); return false;
+  };
+  await runtime.deliver(id, "accepted into native work", "dori-followup-batch");
+  const turn = fake.threads.get(id)!.turns[0]!;
+  expect(turn.items.map(item => item.clientId)).toEqual(["native-client-native-created-before-admission", "dori-followup-batch"]);
+  expect(runtime.sessions.get(id)?.lastDeliveryId).toBe("dori-followup-batch");
+  expect(runtime.sessions.get(id)?.ownedTurnId).toBeUndefined(); expect(runtime.sessions.get(id)?.pendingOwnership).toBeUndefined();
+  fake.event("item/commandExecution/requestApproval", { threadId: id, turnId: turn.id }, "native-owned-thread-request");
+  await Bun.sleep(10);
+  expect(runtime.requests.size).toBe(0); expect(fake.replies).toHaveLength(0);
+  await runtime.shutdown(); expect(turn.status).toBe("inProgress"); expect(fake.count("turn/interrupt")).toBe(0);
+});
+
+test("missing first-message provenance keeps creation ownership unresolved and cleanup conservative", async () => {
+  const { fake, runtime } = await setup();
+  const id = await runtime.create("unproven", fake.home, "fixture");
+  fake.hook = (m, ws) => {
+    if (m.method !== "thread/items/list") return false;
+    ws.send(JSON.stringify({ id: m.id, result: { data: [], nextCursor: null } })); return true;
+  };
+  await runtime.deliver(id, "work", "unproven-batch");
+  expect(runtime.sessions.get(id)?.ownedTurnId).toBeUndefined(); expect(runtime.sessions.get(id)?.pendingOwnership).toMatchObject({ clientId: "unproven-batch" });
+  await expect(runtime.shutdown()).rejects.toThrow("cleanup is unconfirmed");
+  expect(fake.count("turn/interrupt")).toBe(0); expect(runtime.codex.connected).toBe(true);
+});
+
+test("shutdown closes admission while a second worker awaits refresh, then inventories owned turns", async () => {
+  const { fake, runtime } = await setup();
+  const active = await runtime.create("active", fake.home, "fixture"); await runtime.deliver(active, "work", "active-batch");
+  const pending = await runtime.create("refreshing", fake.home, "fixture");
+  let held: { ws: Bun.ServerWebSocket<undefined>; id: unknown } | undefined;
+  fake.hook = (m, ws) => {
+    if (m.method !== "thread/read" || m.params.threadId !== pending || held) return false;
+    held = { ws, id: m.id }; return true;
+  };
+  const delivery = runtime.deliver(pending, "must not start", "pending-batch").then(() => "accepted", e => String(e));
+  await until(() => !!held);
+  const shutdown = runtime.shutdown();
+  expect(runtime.stopping).toBe(true); expect(fake.count("turn/interrupt")).toBe(0);
+  held!.ws.send(JSON.stringify({ id: held!.id, result: { thread: fake.threads.get(pending) } }));
+  expect(await delivery).toContain("runtime is stopping"); await shutdown;
+  expect(fake.threads.get(pending)?.status.type).toBe("idle"); expect(fake.count("turn/start")).toBe(1);
+  expect(fake.calls.filter(m => m.method === "turn/interrupt").map(m => m.params.threadId)).toEqual([active]);
+});
+
+test("shutdown drains already submitted turns and pending thread creation before disconnecting", async () => {
+  const { fake, runtime } = await setup();
+  const id = await runtime.create("submitting", fake.home, "fixture");
+  let held: { ws: Bun.ServerWebSocket<undefined>; id: unknown; turn: NativeTurn } | undefined;
+  fake.hook = (m, ws) => {
+    if (m.method !== "turn/start") return false;
+    const t = fake.thread(id, "dori-admitted-turn"); t.turns[0]!.items[0]!.clientId = m.params.clientUserMessageId;
+    held = { ws, id: m.id, turn: t.turns[0]! }; return true;
+  };
+  const delivery = runtime.deliver(id, "already in flight", "inflight-batch"); await until(() => !!held);
+  const shutdown = runtime.shutdown(); expect(fake.count("turn/interrupt")).toBe(0);
+  held!.ws.send(JSON.stringify({ id: held!.id, result: { turn: held!.turn } }));
+  await delivery; await shutdown; expect(fake.threads.get(id)?.turns[0]?.status).toBe("interrupted");
+  expect(fake.count("turn/interrupt")).toBe(1);
+});
+
+test("thread creation awaiting connection cannot admit work after shutdown starts", async () => {
+  const { fake, runtime } = await setup();
+  let release!: () => void;
+  const held = new Promise<void>(resolve => { release = resolve; });
+  runtime.codex.connect = async () => held;
+  const creation = runtime.create("late", fake.home, "fixture").then(() => "created", e => String(e));
+  const shutdown = runtime.shutdown(); release();
+  expect(await creation).toContain("runtime is stopping"); await shutdown;
+  expect(fake.count("thread/start")).toBe(0);
+});
+
+test("shared successful review survives completed then idle notifications", async () => {
+  const { fake, runtime } = await setup();
+  fake.hook = (m, ws) => {
+    if (m.method !== "turn/start") return false;
+    const t = fake.thread(m.params.threadId, "review-complete-turn"), turn = t.turns[0]!;
+    turn.items[0]!.clientId = m.params.clientUserMessageId;
+    ws.send(JSON.stringify({ id: m.id, result: { turn } })); fake.event("turn/started", { threadId: t.id, turn });
+    setTimeout(() => {
+      turn.status = "completed"; t.status = { type: "idle" };
+      fake.event("item/completed", { threadId: t.id, turnId: turn.id, item: { type: "agentMessage", text: "VERDICT: CLEAR", phase: "final_answer" } });
+      fake.event("turn/completed", { threadId: t.id, turn }); fake.event("thread/status/changed", { threadId: t.id, status: { type: "idle" } });
+    }, 10);
+    return true;
+  };
+  expect(await runtime.review("review", fake.home)).toBe("VERDICT: CLEAR");
+  expect([...runtime.sessions.values()].find(s => s.name === "review")).toMatchObject({ lastTurnStatus: "completed", closed: true });
+});
+
+test("shared failed and completed terminal outcomes survive later idle notifications", async () => {
+  for (const outcome of ["failed", "completed"]) {
+    const { fake, runtime } = await setup(); const id = await runtime.create(outcome, fake.home, "fixture");
+    await runtime.deliver(id, "work", `terminal-${outcome}`);
+    const t = fake.threads.get(id)!, turn = t.turns[0]!; turn.status = outcome; t.status = { type: "idle" };
+    fake.event("turn/completed", { threadId: id, turn }); fake.event("thread/status/changed", { threadId: id, status: { type: "idle" } });
+    await until(() => runtime.sessions.get(id)?.lastTurnStatus === outcome);
+    expect(runtime.sessions.get(id)?.status).toBe(outcome === "failed" ? "failed" : "done");
+    expect(await runtime.status(id)).toBe(outcome === "failed" ? "failed" : "done");
+  }
+});
+
+for (const outcome of ["completed", "failed"]) {
+  test(`external ${outcome} then native idle permits a fresh notification turn`, async () => {
+    const { fake, runtime } = await setup(), d = deps(fake, runtime);
+    const t = fake.threads.get("native-lead")!, turn = t.turns[0]!;
+    turn.status = outcome; t.status = { type: "idle" };
+    fake.event("turn/completed", { threadId: t.id, turn });
+    fake.event("thread/status/changed", { threadId: t.id, status: { type: "idle" } });
+    await until(() => runtime.sessions.get(t.id)?.lastTurnStatus === outcome);
+    expect(await runtime.status(t.id)).toBe("idle");
+    expect(await send(d, "lead", `wake after ${outcome}`, "cli")).toBe("DELIVERED");
+    expect(fake.count("turn/start")).toBe(1); expect(fake.count("turn/steer")).toBe(0);
+    expect(runtime.sessions.get(t.id)?.ownedTurnId).toBeUndefined();
+  });
+}
 
 test("RPC error payloads are not copied to callers and pending calls reject promptly on disconnect", async () => {
   const { fake, runtime } = await setup();

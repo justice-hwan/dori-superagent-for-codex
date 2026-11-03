@@ -140,6 +140,26 @@ test("confirmed failures can recover without restarting other lanes and failed r
   expect(failedReview).toMatchObject({ closed: true, lastTurnStatus: "failed" });
 });
 
+test("stdio failed and completed outcomes survive generic idle notifications", async () => {
+  const { home, runtime: r } = await setup();
+  for (const text of ["FAIL", "success"]) {
+    const id = await r.create(text, home, "fixture"); await r.deliver(id, text);
+    await until(() => !!r.sessions.get(id)?.lastTurnStatus);
+    r.codex.onMessage({ method: "thread/status/changed", params: { threadId: id, status: { type: "idle" } } });
+    expect(await r.status(id)).toBe(text === "FAIL" ? "failed" : "done");
+  }
+});
+
+test("stdio successful review survives a completed then idle notification pair", async () => {
+  const { home, runtime: r } = await setup();
+  const message = r.codex.onMessage;
+  r.codex.onMessage = m => {
+    message(m);
+    if (m.method === "turn/completed") message({ method: "thread/status/changed", params: { threadId: m.params.threadId, status: { type: "idle" } } });
+  };
+  expect(await r.review("VERDICT: CLEAR", home)).toBe("VERDICT: CLEAR");
+});
+
 test("review keeps its result collector while waiting for an explicit request answer", async () => {
   const { home, runtime: r } = await setup();
   let outcome = "pending";
