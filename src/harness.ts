@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { shq, spawnExec, type Exec } from "./process.ts";
 import { Sessions, type SessionRuntime, type AgentStatus } from "./sessions.ts";
 import { KEY_RE, Store, type HostLoad, type Lane, type Role } from "./store.ts";
+import { prepareReviewSnapshot } from "./review-snapshot.ts";
 type MergeOutcome = "merged" | "no_receipt" | "review_block" | "no_checks" | "checks_red" | "checks_all_skipped";
 
 export { KEY_RE };
@@ -20,6 +21,7 @@ export type Deps = {
   readonly now: () => number;
   readonly doriCmd: string;
   readonly host: () => HostLoad;
+  readonly reviewSnapshot?: typeof prepareReviewSnapshot;
 };
 
 export const defaultDeps = (): Deps => {
@@ -102,6 +104,14 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
   await d.sessions.deliver(threadId, body, batch.id);
+  const lane = d.store.laneByThread(threadId);
+  if (lane?.kickoffPending) {
+    d.store.editLane(lane.key, (current) => {
+      current.kickoffPending = false;
+      if (current.status === "waiting") current.status = "working";
+      current.lastActivityAt = d.now();
+    });
+  }
   d.store.ackInbox(threadId, queued.length);
   return true;
   } finally { unlock(); }
@@ -124,6 +134,12 @@ export async function startLane(
   opts: { cwd?: string } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
+  const unlock = d.store.lockAllocation(key);
+  if (!unlock) throw new Refusal(`lane ${key} allocation is already in progress`);
+  try { return await allocateLane(d, key, briefFile, opts); } finally { unlock(); }
+}
+
+async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd?: string }): Promise<Lane> {
   const existing = d.store.lane(key);
   if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.threadId}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
@@ -137,51 +153,44 @@ export async function startLane(
   const now = d.now();
   const lane: Lane = {
     key, threadId, brief: briefPath, cwd,
-    status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
+    status: "working", kickoffPending: true, createdAt: now, lastActivityAt: now, nudges: 0,
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
   try {
-    await d.sessions.deliver(threadId, kickoff);
+    if (await send(d, key, kickoff, "lead") !== "DELIVERED") throw new Refusal("kickoff queued; inspect the existing lane before retrying");
   } catch (e) {
-    lane.status = "lost";
-    lane.log.push({ at: d.now(), kind: "lost", text: "Codex turn failed to start" });
-    d.store.saveLane(lane);
-    await d.sessions.close(threadId).catch(() => {});
+    d.store.editLane(key, (current) => {
+      if (!current.kickoffPending || current.status === "ready" || current.status === "done") return false;
+      current.status = "waiting";
+      current.log.push({ at: d.now(), kind: "report", text: "kickoff delivery unresolved; reconcile this session before replacement" });
+    });
     throw e;
   }
   await tellLead(d, `[START ${key}] lane opened in ${threadId}`, key);
-  return lane;
-}
-
-function openLane(d: Deps, key: string): Lane {
-  const lane = d.store.lane(key);
-  if (!lane) throw new Refusal(`no lane ${key}`);
-  if (lane.status === "done" || lane.status === "lost") throw new Refusal(`lane ${key} is ${lane.status}`);
-  return lane;
+  return d.store.lane(key)!;
 }
 
 export async function report(d: Deps, key: string, text: string, status?: "working" | "waiting"): Promise<void> {
-  const lane = openLane(d, key);
   const now = d.now();
-  lane.log.push({ at: now, kind: "report", text });
-  lane.lastActivityAt = now;
-  lane.nudges = 0;
-  if (status) lane.status = status;
-  d.store.saveLane(lane);
+  d.store.editLane(key, (lane) => {
+    if (lane.status === "done" || lane.status === "lost") throw new Refusal(`lane ${key} is ${lane.status}`);
+    lane.log.push({ at: now, kind: "report", text });
+    lane.lastActivityAt = now; lane.nudges = 0;
+    if (status) lane.status = status;
+  });
   await tellLead(d, `[REPORT ${key}${status === "waiting" ? " WAITING" : ""}] ${text}`, key);
 }
 
 export async function ready(d: Deps, key: string, text: string, evidence: readonly string[]): Promise<void> {
   if (evidence.length === 0) throw new Refusal("READY needs at least one --evidence link (a PR, a receipt, a file)");
   if (!text.trim()) throw new Refusal("READY needs the final answer text");
-  const lane = openLane(d, key);
   const now = d.now();
-  lane.status = "ready";
-  lane.final = { text, evidence: [...evidence], at: now };
-  lane.lastActivityAt = now;
-  lane.log.push({ at: now, kind: "ready", text });
-  d.store.saveLane(lane);
+  d.store.editLane(key, (lane) => {
+    if (lane.status === "done" || lane.status === "lost") throw new Refusal(`lane ${key} is ${lane.status}`);
+    lane.status = "ready"; lane.final = { text, evidence: [...evidence], at: now };
+    lane.lastActivityAt = now; lane.log.push({ at: now, kind: "ready", text });
+  });
   await tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key);
 }
 
@@ -192,9 +201,10 @@ export async function done(d: Deps, key: string): Promise<void> {
   const st = await d.sessions.status(lane.threadId);
   if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} thread is ${st}; let it finish first`);
   if (st !== "gone") await d.sessions.close(lane.threadId);
-  lane.status = "done";
-  lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
-  d.store.saveLane(lane);
+  d.store.editLane(key, (current) => {
+    current.status = "done";
+    current.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
+  });
 }
 
 // ---------- duty loop ----------
@@ -223,41 +233,41 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       else events.push({ thread: threadId, action: "flush-failed", detail: failureDetail(e) });
     }
   }
-  for (const lane of d.store.lanes()) {
-    if (lane.status !== "working" && lane.status !== "waiting") continue;
+  for (const observed of d.store.lanes()) {
+    if (observed.status !== "working" && observed.status !== "waiting") continue;
     try {
-      const st = await d.sessions.status(lane.threadId);
+      const st = await d.sessions.status(observed.threadId);
       const now = d.now();
-      if (st === "gone") {
-        lane.status = "lost";
-        lane.log.push({ at: now, kind: "lost", text: "thread disappeared without READY" });
-        d.store.saveLane(lane);
+      let action: "lost" | "nudge" | "escalate" | undefined;
+      let idleMin = 0;
+      const lane = d.store.editLane(observed.key, (current) => {
+        if (current.threadId !== observed.threadId || (current.status !== "working" && current.status !== "waiting")) return false;
+        if (st === "gone") {
+          current.status = "lost";
+          current.log.push({ at: now, kind: "lost", text: "thread disappeared without READY" });
+          action = "lost"; return;
+        }
+        if (st === "working") { current.lastActivityAt = now; return; }
+        if (current.status === "waiting" || st === "blocked" || st === "unknown") return false;
+        idleMin = (now - current.lastActivityAt) / 60_000;
+        const due = NUDGE_MINUTES[current.nudges];
+        if (due === undefined || idleMin < due) return false;
+        current.nudges += 1;
+        current.log.push({ at: now, kind: "nudge", text: `idle ${Math.floor(idleMin)} min` });
+        action = current.nudges < NUDGE_MINUTES.length ? "nudge" : "escalate";
+      });
+      if (action === "lost") {
         await tellLead(d, `[LOST ${lane.key}] thread ${lane.threadId} closed without a final answer`, "duty");
         events.push({ lane: lane.key, action: "lost" });
-        continue;
-      }
-      if (st === "working") {
-        lane.lastActivityAt = now;
-        d.store.saveLane(lane);
-        continue;
-      }
-      if (lane.status === "waiting" || st === "blocked") continue;
-      const idleMin = (now - lane.lastActivityAt) / 60_000;
-      const due = NUDGE_MINUTES[lane.nudges];
-      if (due === undefined || idleMin < due) continue;
-      lane.nudges += 1;
-      lane.log.push({ at: now, kind: "nudge", text: `idle ${Math.floor(idleMin)} min` });
-      d.store.saveLane(lane);
-      if (lane.nudges < NUDGE_MINUTES.length) {
+      } else if (action === "nudge") {
         await send(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(idleMin)), dori: d.doriCmd }), "duty");
         events.push({ lane: lane.key, action: `nudge-${lane.nudges}` });
-      } else {
+      } else if (action === "escalate") {
         await tellLead(d, `[ESCALATE ${lane.key}] idle ${Math.floor(idleMin)} min with no READY after ${lane.nudges - 1} nudges`, "duty");
         events.push({ lane: lane.key, action: "escalated" });
       }
     } catch (e) {
-      // One lane's failed status read or delivery must not end the loop for the other lanes.
-      events.push({ lane: lane.key, action: "lane-failed", detail: failureDetail(e) });
+      events.push({ lane: observed.key, action: "lane-failed", detail: failureDetail(e) });
     }
   }
   return events;
@@ -284,42 +294,56 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
   return String(out.headRefOid);
 }
 
+async function reviewTarget(d: Deps, pr: PrRef): Promise<{ head: string; base: string }> {
+  const out = JSON.parse(await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "headRefOid,baseRefOid"]));
+  if (!/^[0-9a-f]{40}$/.test(out.headRefOid) || !/^[0-9a-f]{40}$/.test(out.baseRefOid)) throw new Refusal("GitHub returned no full head/base SHA; review unconfirmed");
+  return { head: out.headRefOid, base: out.baseRefOid };
+}
+
 /** Runs a fresh, non-interactive reviewer session pinned to the PR head and records its verdict as a receipt. */
-export async function review(d: Deps, prId: string, model?: string): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string }> {
+export async function review(d: Deps, prId: string, model?: string): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string; baseSha: string; reportPath: string }> {
   const pr = parsePr(prId);
-  const sha = await headSha(d, pr);
-  const text = prompt("review.md", { pr: pr.id, repo: pr.repo, number: String(pr.number), sha });
-  const output = await d.sessions.review(text, process.cwd(), model);
+  const { head: sha, base: baseSha } = await reviewTarget(d, pr);
+  const snapshot = await (d.reviewSnapshot ?? prepareReviewSnapshot)(d.store.root, process.cwd(), pr.id, sha, baseSha);
+  const text = prompt("review.md", { pr: pr.id, sha, base: baseSha, source: snapshot.cwd, diff: snapshot.diffPath, metadata: snapshot.metadataPath });
+  const output = await d.sessions.review(text, snapshot.cwd, model);
+  writeFileSync(snapshot.reportPath, output + "\n", { mode: 0o600 });
+  const current = await reviewTarget(d, pr);
+  if (current.head !== sha || current.base !== baseSha) throw new Refusal("PR head or base changed during review; no receipt written");
   const verdicts = [...output.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
   if (!last) throw new Error("reviewer printed no VERDICT line; no receipt written");
   const verdict = last[1] as "CLEAR" | "BLOCK";
-  d.store.saveReceipt({ pr: pr.id, sha, verdict, model: model ?? "default", at: d.now(), summary: output.trim().slice(-4000) });
-  return { verdict, sha };
+  d.store.saveReceipt({ pr: pr.id, sha, baseSha, verdict, model: model ?? "default", at: d.now(), summary: output.trim().slice(-4000), reportPath: snapshot.reportPath });
+  return { verdict, sha, baseSha, reportPath: snapshot.reportPath };
 }
 
 type Check = { name: string; bucket: string };
 
 /** Merge only when the exact current head has a CLEAR review receipt and every check passed. An empty check list is never green. */
-export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean } = {}): Promise<string> {
+export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean; method?: "merge" | "squash" | "rebase" } = {}): Promise<string> {
   const pr = parsePr(prId);
-  const sha = await headSha(d, pr);
-  const refused = await gateRefusal(d, pr, sha);
+  const { head: sha, base } = await reviewTarget(d, pr);
+  const refused = await gateRefusal(d, pr, sha, base);
   if (refused) {
     throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
   }
+  const current = await reviewTarget(d, pr);
+  if (current.head !== sha || current.base !== base) throw new Refusal("MERGE_REFUSED head or base changed while checking");
   if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
-  await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
+  await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, `--${opts.method ?? "merge"}`, "--match-head-commit", sha]);
   return `MERGED ${pr.id} head=${sha}`;
 }
 
-async function gateRefusal(d: Deps, pr: PrRef, sha: string): Promise<[MergeOutcome, string] | undefined> {
+async function gateRefusal(d: Deps, pr: PrRef, sha: string, base: string): Promise<[MergeOutcome, string] | undefined> {
   const receipt = d.store.receipt(pr.id, sha);
-  if (!receipt) return ["no_receipt", `no review receipt at head ${sha.slice(0, 12)} (run: dori review ${pr.id})`];
+  if (!receipt) return ["no_receipt", `no review receipt at head ${sha.slice(0, 12)} (run: dori-codex review ${pr.id})`];
+  if (receipt.baseSha !== base) return ["no_receipt", "target base changed; review this head/base pair again"];
   if (receipt.verdict !== "CLEAR") return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
   const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
   const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
   if (checks.length === 0) return ["no_checks", "no checks reported: an empty check list is never green"];
+  if (checksRes.code !== 0) return ["checks_red", "check command failed; status is unconfirmed"];
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
   if (bad.length > 0) return ["checks_red", `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`];
   if (!checks.some((c) => c.bucket === "pass")) return ["checks_all_skipped", "every check was skipped"];

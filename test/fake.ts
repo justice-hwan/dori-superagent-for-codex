@@ -52,6 +52,8 @@ export class World {
       close: async (id) => { await call("close", [id]); },
       review: async (text, _cwd, model) => { const r = this.reviewer([text, model ?? "default"]); if (r.code) throw new Error("review failed"); return r.stdout; },
     };
-    return { store: new Store(mkdtempSync(join(tmpdir(), "dori-test-"))), sessions, exec: this.exec, now: () => this.clock, doriCmd: "dori", host: () => this.host };
+    const store = new Store(mkdtempSync(join(tmpdir(), "dori-test-")));
+    return { store, sessions, exec: this.exec, now: () => this.clock, doriCmd: "dori", host: () => this.host,
+      reviewSnapshot: async () => ({ cwd: store.root, diffPath: join(store.root, "diff.patch"), metadataPath: join(store.root, "metadata.json"), reportPath: join(store.root, "review.txt") }) };
   }
 }

@@ -21,3 +21,9 @@ Install from the reviewed checkout with `bash install.sh`, then invoke `dori-cod
 ## Updating upstream
 
 Keep an `upstream` remote, fetch changes, and merge into a dedicated branch. Resolve runtime and privacy changes deliberately. Run typecheck, boundary checks, offline tests and the explicit live smoke before using a new runtime. Avoid importing a second CLI with a conflicting command name.
+
+## Tracking future upstream changes
+
+Run `dori-codex upstream check` to fetch the declared source and list pending commits from `.upstream.json`. Its repository check prevents silently fetching a different remote. Resolve updates in a dedicated branch, preserve removed-dependency/collector boundaries, update the manifest to the exact integrated SHA, test and independently review. Keep merge commits so future upstream changes have the correct common ancestor. No scheduled update is enabled.
+
+Reviews freeze source and diff from local immutable git objects, bind receipts to both head and base, and refuse a changed pair. Start uncertainty is recorded before submission, including kickoff batches. Unresolved lanes stay open and block replacement. Stale runtime/inbox leases use a serialized claim gate; an abandoned claim gate requires explicit inspection rather than unsafe automatic deletion. Shutdown verifies the owned app-server has exited before removing runtime ownership.

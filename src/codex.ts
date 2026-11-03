@@ -1,4 +1,4 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { createInterface } from "node:readline";
 
 export type RpcMessage = { id?: number | string; method?: string; params?: any; result?: any; error?: { code: number; message: string } };
@@ -18,7 +18,7 @@ export class Codex {
     if (this.child) throw new Error("Codex connection already opened");
     const [bin, ...args] = this.argv;
     if (!bin) throw new Error("missing Codex executable");
-    this.child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    this.child = spawn(bin, args, { detached: process.platform !== "win32", stdio: ["pipe", "pipe", "pipe"] });
     // stderr is drained, but may contain local paths or MCP errors: don't copy it into public responses.
     this.child.stderr.resume();
     const fail = (error: Error) => {
@@ -59,12 +59,43 @@ export class Codex {
   async disconnect(): Promise<void> {
     const child = this.child;
     if (!child) return;
-    if (child.exitCode !== null || child.signalCode !== null) { this.child = undefined; return; }
-    child.stdin.end();
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => { child.kill("SIGTERM"); resolve(); }, 1500);
-      child.once("exit", () => { clearTimeout(timer); resolve(); });
-    });
+    if (!child.pid) { this.child = undefined; return; }
+    const exited = () => child.exitCode !== null || child.signalCode !== null;
+    const waitExit = (ms: number): Promise<boolean> => {
+      if (exited()) return Promise.resolve(true);
+      return new Promise((resolve) => {
+        const finish = () => { clearTimeout(timer); child.off("exit", finish); resolve(true); };
+        const timer = setTimeout(() => { child.off("exit", finish); resolve(exited()); }, ms);
+        child.once("exit", finish);
+      });
+    };
+    const groupAlive = (): boolean => {
+      if (process.platform === "win32") return !exited();
+      try { process.kill(-child.pid!, 0); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code === "ESRCH") return false; throw e; }
+      // A reparented zombie has no executable work left and cannot be killed again.
+      const rows = execFileSync("ps", ["-axo", "pgid=,stat="], { encoding: "utf8", timeout: 1000, maxBuffer: 8 * 1024 * 1024 });
+      return rows.split("\n").some((line) => { const [group, status] = line.trim().split(/\s+/); return Number(group) === child.pid && status && !status.startsWith("Z"); });
+    };
+    const signalGroup = (signal: NodeJS.Signals) => {
+      try { if (process.platform === "win32") child.kill(signal); else process.kill(-child.pid!, signal); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== "ESRCH") throw e; }
+    };
+    const waitGroup = async (ms: number) => {
+      const until = Date.now() + ms;
+      while (groupAlive()) { if (Date.now() >= until) return false; await new Promise((resolve) => setTimeout(resolve, 25)); }
+      return true;
+    };
+    if (!child.stdin.destroyed) child.stdin.end();
+    await waitExit(1500);
+    if (groupAlive()) {
+      signalGroup("SIGTERM");
+      if (!await waitGroup(1000)) {
+        signalGroup("SIGKILL"); // Only the isolated process group this client spawned.
+        if (!await waitGroup(1000)) throw new Error("owned Codex process group did not exit; ownership retained");
+      }
+    }
+    if (!await waitExit(1000)) throw new Error("owned Codex app-server exit is unconfirmed; ownership retained");
     this.child = undefined;
   }
 }

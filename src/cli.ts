@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
   defaultDeps, resolveTarget, done, dutyTick, mergeGate, ready, Refusal, report, review, send, startLane, ROLES, type Deps,
 } from "./harness.ts";
-import { Sessions } from "./sessions.ts";
+import { Sessions, socketPath } from "./sessions.ts";
 import { ensureRuntime } from "./daemon.ts";
 import { serve } from "./runtime.ts";
+import { checkUpstream } from "./upstream.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import type { Role } from "./store.ts";
 
@@ -27,7 +28,7 @@ const USAGE = `dori-codex - a local multi-session harness on Codex app-server
   dori-codex backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
   dori-codex backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
   dori-codex review <owner/repo#N> [--model M]      fresh Codex reviewer at the exact head -> receipt
-  dori-codex merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
+  dori-codex merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> merge commit
   dori-codex done <key>                             lead closes a READY lane
   dori-codex status                            local registry (works while stopped)
   dori-codex read <lead|key|thread>             latest assistant output
@@ -37,6 +38,7 @@ const USAGE = `dori-codex - a local multi-session harness on Codex app-server
   dori-codex requests answer ID --json FILE    answer one pending request explicitly
   dori-codex doctor                            runtime + sign-in status (no credentials)
   dori-codex down                              interrupt owned turns and stop local runtime
+  dori-codex upstream check [--repo DIR]        fetch and list unintegrated upstream commits
 
 --text may be omitted to read the message from stdin.`;
 
@@ -95,6 +97,11 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
   const a = parse(argv);
   const [cmd, x] = a.pos;
   switch (cmd) {
+    case "upstream": {
+      if (x !== "check") throw new Refusal("use upstream check");
+      console.log(JSON.stringify(await checkUpstream(resolve(one(a, "repo") ?? join(import.meta.dir, ".."))), null, 2));
+      return 0;
+    }
     case "serve": {
       return await serve(d.store.root, async () => {
         await dutyTick(d);
@@ -106,7 +113,12 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       await runtime.call("shutdown");
       for (let n = 0; n < 100; n++) {
         await Bun.sleep(100);
-        try { await runtime.call("health"); } catch { console.log("DOWN"); return 0; }
+        if (!existsSync(socketPath(d.store.root))) {
+          if (existsSync(join(d.store.root, "runtime.lock"))) throw new Refusal("runtime socket disappeared but ownership remains; shutdown unconfirmed");
+          console.log("DOWN"); return 0;
+        }
+        const health = await runtime.call<{ shutdownError?: string }>("health");
+        if (health.shutdownError) throw new Refusal(`shutdown unconfirmed: ${health.shutdownError}`);
       }
       throw new Refusal("runtime is still stopping; inspect before retrying");
     }
@@ -266,12 +278,15 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "review": {
       const r = await review(d, need(x, "PR"), one(a, "model"));
-      console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
+      console.log(`REVIEW ${x} head=${r.sha} base=${r.baseSha} verdict=${r.verdict} report=${r.reportPath}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
-    case "merge":
-      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
+    case "merge": {
+      const method = one(a, "method") ?? "merge";
+      if (!["merge", "squash", "rebase"].includes(method)) throw new Refusal("--method must be merge, squash or rebase");
+      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true", method: method as "merge" | "squash" | "rebase" }));
       return 0;
+    }
     case "done":
       await done(d, need(x, "lane key"));
       console.log(`DONE ${x}`);

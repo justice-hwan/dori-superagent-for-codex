@@ -1,5 +1,6 @@
-import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, openSync, closeSync, unlinkSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { acquireFileLease } from "./lock.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +15,7 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  kickoffPending?: boolean;
   final?: { text: string; evidence: string[]; at: number };
   log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
 };
@@ -26,10 +28,12 @@ export type InboxBatch = { id: string; offset: number; messages: QueuedMessage[]
 export type ReviewReceipt = {
   pr: string;
   sha: string;
+  baseSha: string;
   verdict: "CLEAR" | "BLOCK";
   model: string;
   at: number;
   summary: string;
+  reportPath?: string;
 };
 
 export type ItemStatus = "open" | "running" | "done" | "dropped";
@@ -104,6 +108,23 @@ export class Store {
     this.writeJson(join(this.root, "lanes", `${lane.key}.json`), lane);
   }
 
+  lockAllocation(key: string): (() => void) | undefined {
+    checkedId(key);
+    return acquireFileLease(join(this.root, "lanes", `${key}.allocation.lock`))?.release;
+  }
+
+  editLane(key: string, edit: (lane: Lane) => void | false): Lane {
+    checkedId(key);
+    const lease = acquireFileLease(join(this.root, "lanes", `${key}.mutation.lock`));
+    if (!lease) throw new Error(`lane ${key} update is busy; retry after the current update`);
+    try {
+      const lane = this.lane(key);
+      if (!lane) throw new Error(`no lane ${key}`);
+      if (edit(lane) !== false) this.saveLane(lane);
+      return lane;
+    } finally { lease.release(); }
+  }
+
   lanes(): Lane[] {
     return readdirSync(join(this.root, "lanes"))
       .filter((f) => f.endsWith(".json"))
@@ -171,22 +192,7 @@ export class Store {
 
   /** Serialize submissions across CLI processes and duty ticks, with dead-owner recovery. */
   lockInbox(threadId: string): (() => void) | undefined {
-    const path = this.inboxPath(threadId) + ".lock";
-    const token = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
-    try {
-      const fd = openSync(path, "wx", 0o600);
-      try { writeFileSync(fd, token); } finally { closeSync(fd); }
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      try {
-        const old = JSON.parse(readFileSync(path, "utf8")) as { pid: number };
-        try { process.kill(old.pid, 0); return undefined; }
-        catch (err) { if ((err as NodeJS.ErrnoException).code !== "ESRCH") return undefined; }
-        unlinkSync(path);
-        return this.lockInbox(threadId);
-      } catch { return undefined; }
-    }
-    return () => { if (existsSync(path) && readFileSync(path, "utf8") === token) unlinkSync(path); };
+    return acquireFileLease(this.inboxPath(threadId) + ".lock")?.release;
   }
 
   inboxThreads(): string[] {

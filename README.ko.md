@@ -32,7 +32,7 @@ dori-codex merge owner/repo#123 --dry-run
 dori-codex done fix-login
 ```
 
-READY에는 증거가 필요하고, 리드가 실제 증거를 확인해야 합니다. 모델 응답이 끝났다는 이유로 완료 처리하거나 머지하지 않습니다. 머지에는 현재 head의 CLEAR 리뷰와 하나 이상의 통과한 체크가 필요합니다. head가 바뀌거나 체크가 없거나 모두 skip이면 거절합니다. 리뷰는 읽기 전용 Codex 세션에서 실행합니다.
+READY에는 증거가 필요하고, 리드가 실제 증거를 확인해야 합니다. 모델 응답이 끝났다는 이유로 완료 처리하거나 머지하지 않습니다. 머지에는 현재 head와 base의 CLEAR 리뷰와 하나 이상의 통과한 체크가 필요합니다. head가 바뀌거나 체크가 없거나 모두 skip이면 거절합니다. 리뷰는 정확한 head·base의 로컬 원본 Git 소스 스냅샷과 diff를 만들어 읽기 전용 Codex 세션에서 실행합니다. 해당 커밋을 가진 로컬 clone에서 명령을 실행해야 합니다. 리뷰 중 head나 base가 바뀌면 승인 기록을 만들지 않습니다. 기본 머지는 upstream 이력을 유지하는 merge commit이며, squash·rebase는 `--method`로 명시해야 합니다.
 
 바쁜 세션으로 보낸 메시지는 로컬 inbox에 보관했다가 받을 수 있을 때 묶어서 전달합니다. 메시지 묶음은 고정된 전달 ID로 중복 제출을 막습니다. 수신을 확인할 수 없는 타임아웃은 재시작 후에도 자동 재전송하지 않습니다. Codex 이력을 확인한 뒤 `reconcile 대상 --delivered true` 또는 `--delivered false`로 전달 여부를 명시해야 합니다. `read`는 최근 응답을 표시하고, 전체 이력은 Codex 자체 로컬 저장소에 남습니다.
 
@@ -51,7 +51,7 @@ dori-codex interrupt fix-login
 
 ## 자동 감시와 백로그
 
-duty는 60초마다 큐와 작업 상태를 확인합니다. 작업 중으로 등록된 세션이 10분·20분 동안 조용하면 확인 메시지를 보내고, 40분이면 리드에게 알립니다. 외부 대기·승인 대기 상태는 재촉하지 않습니다.
+duty는 60초마다 큐와 작업 상태를 확인합니다. `duty stop --text 이유`, `duty status`, `duty resume`으로 다음 감시 주기를 중지·확인·재개합니다. 이미 실행 중인 턴의 중단에는 `interrupt`를 사용합니다. 작업 중으로 등록된 세션이 10분·20분 동안 조용하면 확인 메시지를 보내고, 40분이면 리드에게 알립니다. 외부 대기·승인 대기 상태는 재촉하지 않습니다.
 
 시간별 백로그 실행은 `up --auto-loop` 또는 `loop`를 명시적으로 실행할 때 켜집니다. 기본 한도는 열린 작업 3개, 한 번에 시작 2개이며 호스트 부하도 확인합니다. 사용자가 요청한 작업만 백로그에 넣습니다.
 
@@ -75,6 +75,7 @@ bun run smoke:live
 
 일반 테스트는 가짜 app-server와 격리된 상태 디렉터리를 사용합니다. 실제 모델 테스트는 테스트 세션을 보관 처리하고 실행기를 종료합니다.
 
-upstream 기준 커밋은 `248c291319a1e45db061f1b3eae1cce9640084f7`입니다. 최신 변경은 `git fetch upstream` 후 수동으로 통합하고, 실행기·통신 경계 검사와 전체 테스트를 통과시킵니다. [전체 명령·설계](README.md), [이전 버전과의 차이](docs/migration.md)를 참고하세요.
+최초 upstream 기준은 `248c291319a1e45db061f1b3eae1cce9640084f7`이며, 현재 반영한 커밋은 `.upstream.json`에 기록합니다. `dori-codex upstream check`는 원본 remote를 확인하고 새 커밋을 fetch하여 목록을 보여줍니다. 새 clone에는 선언된 upstream remote를 등록하지만, pull·merge·commit·push나 정기 실행을 하지는 않습니다. 통합 전용 브랜치에서 변경을 반영하고 검증과 독립 리뷰를 거친 뒤 merge commit으로 병합합니다. 그래야 원본 커밋 이력이 보존됩니다. [전체 명령·설계](README.md), [이전 버전과의 차이](docs/migration.md)를 참고하세요.
 
-Duty pause: `dori-codex duty stop --text maintenance`, `dori-codex duty status`, `dori-codex duty resume`. Integrated upstream SHA is tracked in `.upstream.json`.
+
+런타임·inbox의 오래된 잠금은 claim gate 안에서 회수합니다. 짧은 잠금 생성 구간에서 프로세스가 죽어 `.claim` 파일이 남으면 소유자 상태를 확인한 뒤 수동으로 정리해야 합니다. 시작 여부가 불명확한 lane은 대기 상태로 유지하며, 확인 전에는 대체 세션을 만들지 않습니다. 종료는 자신이 시작한 app-server의 실제 종료까지 확인합니다.

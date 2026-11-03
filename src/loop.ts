@@ -336,6 +336,12 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
     } catch (e) {
       const why = e instanceof Error ? e.message : String(e);
       const lane = d.store.lane(item.id);
+      if (lane?.kickoffPending && isOpenLane(lane.status)) {
+        item.status = "running";
+        log(d, item, "start", "lane allocated; kickoff delivery unresolved");
+        run.held.push(`${item.id} kickoff unresolved in ${lane.threadId}; no replacement will start`);
+        continue;
+      }
       if (!lane || !isOpenLane(lane.status) || lane.createdAt < run.at) {
         item.startFailures = (item.startFailures ?? 0) + 1;
         if (item.startFailures >= MAX_ATTEMPTS) item.decision = `lane start failed ${item.startFailures} times (${why.slice(0, 120)}); fix the brief or cwd, or drop?`;

@@ -1,7 +1,8 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, openSync, closeSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Codex, type RpcMessage } from "./codex.ts";
 import { socketPath, validThread, type AgentStatus } from "./sessions.ts";
+import { acquireFileLease } from "./lock.ts";
 
 export type Session = { id: string; name: string; cwd: string; instructions: string; status: AgentStatus; model?: string; readOnly?: boolean; everStarted?: boolean; uncertainDelivery?: boolean; pendingDeliveryId?: string; lastDeliveryId?: string; turnId?: string; lastTurnStatus?: string; output: string; closed?: boolean };
 export type Request = { id: number | string; method: string; params: any };
@@ -10,7 +11,10 @@ export class Runtime {
   readonly sessions = new Map<string, Session>();
   readonly requests = new Map<string, Request>();
   private loaded = new Set<string>();
+  private resuming = new Map<string, Promise<void>>();
+  private revisions = new Map<string, number>();
   private busy = new Set<string>();
+  private submitting = new Set<string>();
   private finished = new Set<string>();
   stopping = false;
 
@@ -61,6 +65,15 @@ export class Runtime {
 
   private async resume(s: Session): Promise<void> {
     if (this.loaded.has(s.id)) return;
+    const pending = this.resuming.get(s.id);
+    if (pending) return pending;
+    const work = this.resumeOnce(s);
+    this.resuming.set(s.id, work);
+    try { await work; } finally { if (this.resuming.get(s.id) === work) this.resuming.delete(s.id); }
+  }
+
+  private async resumeOnce(s: Session): Promise<void> {
+    const revision = this.revisions.get(s.id) ?? 0;
     let r: any;
     try {
       r = await this.codex.request("thread/resume", {
@@ -77,7 +90,9 @@ export class Runtime {
     }
     const status = r.thread?.status;
     // A resume never starts a model turn. Unknown server states remain unsendable.
-    s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? "working" : status?.type === "idle" ? "idle" : "unknown";
+    if ((this.revisions.get(s.id) ?? 0) === revision) {
+      s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? "working" : status?.type === "idle" ? "idle" : "unknown";
+    }
     this.loaded.add(s.id); this.save(s);
   }
 
@@ -98,7 +113,10 @@ export class Runtime {
     try {
       await this.resume(s);
       if (s.status !== "idle" && s.status !== "done") throw new Error(`thread is ${s.status}; message not submitted`);
-      s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.everStarted = true; s.pendingDeliveryId = deliveryId; this.save(s);
+      s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.everStarted = true; s.pendingDeliveryId = deliveryId;
+      // Write-ahead uncertainty closes the crash window before the external submission.
+      s.uncertainDelivery = true; this.save(s);
+      this.submitting.add(id);
       try {
         const r = await this.codex.request("turn/start", { threadId: id, input: [{ type: "text", text, text_elements: [] }], ...(deliveryId ? { clientUserMessageId: deliveryId } : {}) });
         if (typeof r.turn?.id !== "string") throw new Error("Codex returned no turn id");
@@ -109,7 +127,7 @@ export class Runtime {
         // A timeout does not prove no turn started. Don't automatically replay the input.
         if (deliveryId && s.lastDeliveryId === deliveryId) return;
         s.status = "unknown"; s.uncertainDelivery = true; this.save(s); throw e;
-      }
+      } finally { this.submitting.delete(id); }
     } finally { this.busy.delete(id); }
   }
 
@@ -122,6 +140,7 @@ export class Runtime {
         return;
       }
       this.requests.set(String(m.id), { id: m.id, method: m.method, params: p });
+      this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
       s.status = "blocked"; this.save(s); this.saveRequests();
       return;
     }
@@ -129,16 +148,21 @@ export class Runtime {
       this.requests.delete(String(p.requestId)); this.saveRequests();
     }
     if (!s || s.closed) return;
-    if (m.method === "turn/started") { s.status = "working"; s.turnId = p.turn?.id; s.lastDeliveryId = s.pendingDeliveryId; s.uncertainDelivery = false; }
+    if (m.method === "turn/started") {
+      this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
+      if (this.submitting.has(s.id)) { s.lastDeliveryId = s.pendingDeliveryId; s.uncertainDelivery = false; }
+      s.status = s.uncertainDelivery ? "unknown" : "working"; s.turnId = p.turn?.id;
+    }
     else if (m.method === "item/agentMessage/delta") s.output += p.delta ?? "";
     else if (m.method === "item/completed" && p.item?.type === "agentMessage" && typeof p.item.text === "string") {
       // The final item is authoritative; it also works with servers that omit streaming deltas.
       if (p.item.phase !== "commentary") s.output = p.item.text;
     } else if (m.method === "turn/completed") {
+      this.revisions.set(s.id, (this.revisions.get(s.id) ?? 0) + 1);
       const turn = p.turn;
       if (typeof turn?.id === "string") this.finished.add(turn.id);
       s.lastTurnStatus = turn?.status;
-      s.status = turn?.status === "completed" ? "done" : turn?.status === "interrupted" ? "idle" : "unknown";
+      s.status = s.uncertainDelivery ? "unknown" : turn?.status === "completed" ? "done" : turn?.status === "interrupted" ? "idle" : "unknown";
       s.turnId = undefined;
       for (const [id, request] of this.requests) if (request.params.threadId === s.id) this.requests.delete(id);
       this.saveRequests();
@@ -149,7 +173,9 @@ export class Runtime {
   async reconcile(id: string, delivered: boolean): Promise<void> {
     const s = this.owned(id);
     if (!s.uncertainDelivery) throw new Error("thread has no uncertain delivery");
+    const revision = this.revisions.get(id) ?? 0;
     const r = await this.codex.request("thread/read", { threadId: id, includeTurns: false });
+    if ((this.revisions.get(id) ?? 0) !== revision) throw new Error("thread state changed during reconciliation; inspect it again");
     if (r.thread?.status?.type !== "idle") throw new Error("thread must be idle before reconciling delivery");
     if (delivered) s.lastDeliveryId = s.pendingDeliveryId;
     s.pendingDeliveryId = undefined; s.uncertainDelivery = false; s.status = "idle"; this.save(s);
@@ -206,28 +232,28 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
   process.umask(0o077);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const lock = join(home, "runtime.lock");
-  if (existsSync(lock)) {
-    const old = JSON.parse(readFileSync(lock, "utf8")) as { pid: number };
-    let live = true;
-    try { process.kill(old.pid, 0); } catch (e) { live = (e as NodeJS.ErrnoException).code !== "ESRCH"; }
-    if (live) throw new Error("Dori runtime lock is held; inspect it before starting another runtime");
-    unlinkSync(lock);
-  }
-  const fd = openSync(lock, "wx", 0o600);
-  writeFileSync(fd, JSON.stringify({ pid: process.pid })); closeSync(fd);
+  const lease = acquireFileLease(lock);
+  if (!lease) throw new Error("Dori runtime lock or claim gate is held; inspect it before starting another runtime");
   const path = socketPath(home);
   let runtime: Runtime | undefined;
   let server: ReturnType<typeof Bun.serve> | undefined;
   let timer: ReturnType<typeof setInterval> | undefined;
   let stopping = false;
-  const cleanup = async () => {
-    if (stopping) return;
-    stopping = true; if (timer) clearInterval(timer);
-    await runtime?.shutdown();
-    server?.stop(true);
-    if (existsSync(lock)) unlinkSync(lock);
-    if (existsSync(path)) unlinkSync(path);
+  let cleanupPromise: Promise<void> | undefined;
+  let shutdownError: string | undefined;
+  let socketOwned = false;
+  const cleanup = (): Promise<void> => {
+    if (cleanupPromise) return cleanupPromise;
+    cleanupPromise = (async () => {
+      stopping = true; if (timer) clearInterval(timer);
+      await runtime?.shutdown();
+      server?.stop(true);
+      if (socketOwned && lease.holds() && existsSync(path)) unlinkSync(path);
+      lease.release();
+    })().catch((e) => { shutdownError = e instanceof Error ? e.message : String(e); cleanupPromise = undefined; throw e; });
+    return cleanupPromise;
   };
+  const stopAndExit = () => { void cleanup().then(() => process.exit(0)).catch((e) => console.error("shutdown unconfirmed:", e.message)); };
   try {
     if (existsSync(path)) {
       const st = lstatSync(path);
@@ -236,14 +262,15 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
     }
     runtime = new Runtime(home);
     await runtime.codex.connect();
+    if (!lease.holds()) throw new Error("runtime ownership changed during startup");
     server = Bun.serve({ unix: path, maxRequestBodySize: 1_048_576, async fetch(req) {
       try {
         if (req.method !== "POST" || new URL(req.url).pathname !== "/rpc") return new Response("not found", { status: 404 });
         const { method, args: a = {} } = await req.json() as { method: string; args: any };
-        if (runtime!.stopping && method !== "health") throw new Error("runtime is stopping");
+        if (runtime!.stopping && method !== "health" && method !== "shutdown") throw new Error("runtime is stopping");
         let value: unknown;
         switch (method) {
-          case "health": value = { pid: process.pid, sessions: runtime!.sessions.size }; break;
+          case "health": value = { pid: process.pid, sessions: runtime!.sessions.size, stopping, shutdownError }; break;
           case "create": value = await runtime!.create(a.name, a.cwd, a.instructions, a.model, a.readOnly === true); break;
           case "status": value = await runtime!.status(a.threadId); break;
           case "deliver": value = await runtime!.deliver(a.threadId, a.text, a.deliveryId); break;
@@ -255,12 +282,13 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
           case "requests": value = [...runtime!.requests.values()]; break;
           case "answer": value = await runtime!.answer(a.id, a.result); break;
           case "account": { const r = await runtime!.codex.request("account/read", { refreshToken: false }); value = { signedIn: r.account != null, authMode: r.account?.type ?? null }; break; }
-          case "shutdown": setTimeout(() => { void cleanup().finally(() => process.exit(0)); }, 50); value = "stopping"; break;
+          case "shutdown": setTimeout(stopAndExit, 50); value = "stopping"; break;
           default: throw new Error("unknown runtime method");
         }
         return Response.json({ value: value ?? null });
       } catch (e) { return Response.json({ error: e instanceof Error ? e.message : String(e) }, { status: 400 }); }
     } });
+    socketOwned = true;
     chmodSync(path, 0o600);
     let ticking = false;
     timer = setInterval(() => {
@@ -268,7 +296,7 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
       ticking = true;
       void onTick().catch((e) => console.error("duty tick failed:", e.message)).finally(() => { ticking = false; });
     }, 60_000);
-    for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, () => { void cleanup().finally(() => process.exit(0)); });
+    for (const sig of ["SIGTERM", "SIGINT"] as const) process.once(sig, stopAndExit);
     await new Promise<never>(() => {});
   } finally { await cleanup(); }
   throw new Error("runtime stopped");

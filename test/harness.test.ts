@@ -208,7 +208,7 @@ describe("review + merge gate", () => {
   const head = "a".repeat(40);
   function gh(w: World, checks: unknown[]) {
     w.gh = (argv) => {
-      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head }) };
+      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: "b".repeat(40) }) };
       if (argv[1] === "checks") return { code: 0, stdout: JSON.stringify(checks) };
       if (argv[1] === "merge") return { code: 0, stdout: "" };
       return { code: 1, stdout: "" };

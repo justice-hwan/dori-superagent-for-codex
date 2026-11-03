@@ -4,7 +4,7 @@ A local multi-session harness built on **Codex app-server**. Derived from [sisyp
 
 [한국어](README.ko.md)
 
-One lead coordinates tasks. Each lane is a persistent Codex thread. A local duty loop batches queued messages, nudges idle work and reports missing sessions. Completion needs evidence; merging needs a CLEAR review at the exact current head plus at least one passing check.
+One lead coordinates tasks. Each lane is a persistent Codex thread. A local duty loop batches queued messages, nudges idle work and reports missing sessions. Completion needs evidence; merging needs a CLEAR review at the exact current head/base pair plus at least one passing check.
 
 ```mermaid
 flowchart LR
@@ -21,7 +21,7 @@ flowchart LR
 Requires Bun 1.3+, an installed Codex CLI with `app-server`, and a completed `codex login`. GitHub review/merge commands also need authenticated `gh`. macOS and Linux are supported; the local transport uses a Unix socket.
 
 ```sh
-git clone --branch codex/app-server-runtime https://github.com/justice-hwan/dori-superagent-for-codex.git
+git clone https://github.com/justice-hwan/dori-superagent-for-codex.git
 cd dori-superagent-for-codex
 bun install --frozen-lockfile --ignore-scripts
 bun link
@@ -34,7 +34,7 @@ dori-codex status
 dori-codex down
 ```
 
-`up` starts one owned local app-server process and creates/resumes role threads. It does not start a model turn until a message is sent. `down` interrupts owned turns and stops this runtime; stored threads can be resumed later. Existing shared Codex services and remote hosts are not stopped. This package does not register any login service or scheduled job.
+`up` starts one owned local app-server process and creates/resumes role threads. Without `--auto-loop`, it does not start a model turn until a message is sent. `down` interrupts owned turns and stops this runtime; stored threads can be resumed later. Existing shared Codex services and remote hosts are not stopped. This package does not register any login service or scheduled job.
 
 `bash install.sh` links this checkout's CLI and the `dori-codex` skill. It never pulls updates or starts services. The command name is `dori-codex`, so an existing `dori` command is preserved.
 
@@ -51,7 +51,7 @@ dori-codex merge owner/repo#123
 dori-codex done fix-login
 ```
 
-READY is a claim. The lead must inspect the evidence. A completed model turn does not automatically mark a lane READY or merge its PR. The merge command re-reads the head and uses `--match-head-commit`; stale receipts, missing checks, failures and all-skipped checks are refused. Reviews run in a separate read-only Codex thread and only a successful turn with an explicit VERDICT can produce a receipt.
+READY is a claim. The lead must inspect the evidence. A completed model turn does not automatically mark a lane READY or merge its PR. The merge command re-reads both head and base and uses `--match-head-commit`; stale receipts, failed check commands, missing checks, failures and all-skipped checks are refused. Merge commits are the default to preserve imported upstream ancestry; `--method squash|rebase` is an explicit alternative. Reviews run in a separate read-only Codex thread against an immutable raw Git source snapshot and diff. Run the command from a clone containing the PR head and base commits. The full review and metadata are saved under the local state directory. Only a successful turn with an explicit VERDICT and unchanged head/base pair can produce a receipt.
 
 Busy/blocked threads keep their messages on disk until they can receive a new turn. Inbox batches carry stable delivery IDs to avoid replay after a lost local response. A timeout or disconnection without a confirmed start is held as an uncertain delivery across restarts: inspect Codex history, then use `reconcile TARGET --delivered true|false` explicitly. `read TARGET` shows the latest assistant output; it is not a full transcript export. Full thread history stays in Codex's own local storage.
 
@@ -73,7 +73,7 @@ Only threads recorded by this runtime can receive messages, be interrupted or ar
 
 ## Backlog and duty
 
-The runtime runs duty every 60 seconds. It nudges idle working lanes at 10 and 20 minutes and escalates at 40; WAITING/blocked work is left alone. A failure in one lane does not stop the others.
+The runtime runs duty every 60 seconds. Pause future passes with `duty stop --text maintenance`, inspect with `duty status`, and resume with `duty resume`. This does not interrupt a turn already running; use `interrupt` for that. It nudges idle working lanes at 10 and 20 minutes and escalates at 40; WAITING/blocked work is left alone. A failure in one lane does not stop the others.
 
 ```sh
 dori-codex backlog add task-one --brief ./brief.md --priority 2
@@ -86,7 +86,7 @@ The hourly backlog loop is opt-in (`up --auto-loop`, or run `loop` separately). 
 
 ## Local state and communication
 
-State defaults to `~/.dori-codex`, separate from older installations. `DORI_HOME` changes it. Session records, inboxes, requests and logs are private local files. The runtime listens on a mode-0600 Unix socket. `DORI_CODEX_BIN` selects the Codex executable, not a shell command.
+State defaults to `~/.dori-codex`, separate from older installations. `DORI_HOME` changes it. Session records, inboxes, requests and logs are private local files. The runtime listens on a mode-0600 Unix socket. A dead runtime/inbox lease is reclaimed under a serialized claim gate. A crash during the short claim section leaves a `.claim` file for explicit owner inspection; it is not automatically removed. Shutdown verifies exit of its own child, using bounded TERM/KILL escalation if needed. `DORI_CODEX_BIN` selects the Codex executable, not a shell command.
 
 There is **no usage collector, install registration, analytics key or telemetry sender in this fork**. Dori's own communication is the local Unix socket and app-server stdio. Codex model requests and user-configured Codex tools/providers still use their normal connections. GitHub operations use `gh`. No Slack, Notion, Kakao or other messenger connector is bundled or started.
 
@@ -107,12 +107,14 @@ Offline tests use an in-memory harness and a fake app-server process, including 
 ## Keep upstream
 
 ```sh
-git remote add upstream https://github.com/sisyphuslabs/dori-superagent.git
-git fetch upstream
+dori-codex upstream check
+# In a clean local checkout, create a dedicated integration branch:
+git switch -c integrate-upstream
 git merge --no-commit upstream/main
-# Resolve runtime/privacy changes deliberately, then run all checks before committing.
+# Resolve conflicts while preserving Codex runtime and communication boundaries.
+# Run typecheck, boundary checks, offline tests and live smoke; commit, push and review the PR.
 ```
 
-Baseline: upstream `248c291319a1e45db061f1b3eae1cce9640084f7`. Keep the original MIT license and attribution. Upstream integrations must pass `check:boundaries` before adoption. See [migration notes](docs/migration.md).
+`upstream check` uses `.upstream.json`, verifies the remote identity, fetches the declared branch and lists commits since the integrated SHA. On a fresh clone it registers the declared upstream remote. It never pulls, merges, commits, pushes or schedules an update. A rewritten upstream history requires manual inspection. Advance `integratedCommit` only in the reviewed integration branch after resolving every incoming change. Use merge commits for both upstream integration and the resulting fork PR to preserve ancestry.
 
-Duty pause: `dori-codex duty stop --text maintenance`, `dori-codex duty status`, `dori-codex duty resume`. Integrated upstream SHA is tracked in `.upstream.json`.
+Original baseline: upstream `248c291319a1e45db061f1b3eae1cce9640084f7`; the integrated upstream SHA is tracked in `.upstream.json`. Keep the original MIT license and attribution. Upstream integrations must pass `check:boundaries` before adoption. See [migration notes](docs/migration.md).

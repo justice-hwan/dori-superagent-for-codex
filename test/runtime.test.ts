@@ -97,3 +97,33 @@ test("inbox acknowledgment is idempotent after a crash between cursor commit and
     expect(existsSync(journal + ".batch")).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }
 });
+
+test("disconnect verifies exit of its own stubborn child after bounded escalation", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dori-stubborn-test-")), pidFile = join(home, "pid");
+  const codex = new Codex([process.execPath, join(import.meta.dir, "fixtures/stubborn-codex.ts"), pidFile]);
+  let pid: number | undefined;
+  try {
+    await codex.connect(); pid = Number(readFileSync(pidFile, "utf8")); await codex.disconnect();
+    let alive = false; try { process.kill(pid, 0); alive = true; } catch {}
+    expect(alive).toBe(false);
+  } finally {
+    if (pid) { try { process.kill(pid, "SIGKILL"); } catch {} }
+    await codex.disconnect(); rmSync(home, { recursive: true, force: true });
+  }
+}, 8000);
+
+test("disconnect also stops helpers in its isolated app-server process group", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dori-owned-group-test-")), pidFile = join(home, "pids");
+  const codex = new Codex([process.execPath, join(import.meta.dir, "fixtures/codex-with-helper.ts"), pidFile]);
+  let helper: number | undefined;
+  try {
+    await codex.connect(); helper = JSON.parse(readFileSync(pidFile, "utf8")).helper;
+    await codex.disconnect();
+    const result = Bun.spawnSync(["ps", "-p", String(helper), "-o", "stat="]);
+    const state = result.stdout.toString().trim();
+    expect(state === "" || state.startsWith("Z")).toBe(true);
+  } finally {
+    if (helper) { try { process.kill(helper, "SIGKILL"); } catch {} }
+    await codex.disconnect(); rmSync(home, { recursive: true, force: true });
+  }
+}, 8000);
