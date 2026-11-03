@@ -8,6 +8,8 @@ import { Sessions, DeliveryDeferred, type SessionRuntime, type AgentStatus } fro
 import { KEY_RE, Store, type HostLoad, type Lane, type Role } from "./store.ts";
 import { prepareReviewSnapshot } from "./review-snapshot.ts";
 import { integratePair, recoverIntegration, type Pair } from "./merge.ts";
+import { checkInstance, checkRevision, recoverTaskInputs, revisionOf } from "./tasks.ts";
+import { flushNotices, recordNotice } from "./notifications.ts";
 type MergeOutcome = "merged" | "no_receipt" | "review_block" | "no_checks" | "checks_red" | "checks_all_skipped";
 
 export { KEY_RE };
@@ -71,7 +73,7 @@ const prompt = (name: string, vars: Record<string, string>): string =>
 export function resolveTarget(d: Deps, target: string): string {
   if (d.sessions.known(target)) return target;
   const roles = d.store.roles();
-  if (target === "lead" || target === "duty") {
+  if (target === "lead" || target === "duty" || target === "conversation") {
     const thread = roles[target];
     if (!thread) throw new Refusal(`no ${target} thread registered (dori role ${target} <thread>)`);
     return thread;
@@ -109,7 +111,8 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
   if (d.store.queued(threadId).length === 0) return true;
   const status = await d.sessions.status(threadId);
   if (status === "gone") throw new Refusal(`thread ${threadId} is gone; queued message(s) kept in its inbox`);
-  if (!READY_TO_READ.includes(status) && !(status === "working" && d.sessions.isExternalLead?.(threadId))) return false;
+  const canSteer = status === "working" && d.store.queued(threadId).some(m => m.mode === "steer") && d.sessions.steer;
+  if (!READY_TO_READ.includes(status) && !(status === "working" && d.sessions.isExternalLead?.(threadId)) && !canSteer) return false;
   let batch = d.store.inboxBatch(threadId)!;
   while (batch.messages.every((m) => !m.text.trim())) {
     d.store.ackInbox(threadId, batch.messages.length);
@@ -135,9 +138,18 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
       }
     });
   }
-  try { await d.sessions.deliver(threadId, body, batch.id); }
+  try {
+    if (canSteer) await d.sessions.steer!(threadId, body, batch.id);
+    else await d.sessions.deliver(threadId, body, batch.id);
+  }
   catch (e) { if (e instanceof DeliveryDeferred) return false; throw e; }
   const lane = d.store.laneByThread(threadId);
+  if (lane && queued.some(m => m.revision)) d.store.editLane(lane.key, current => {
+    for (const message of queued) {
+      const instruction = current.instructions?.find(i => i.revision === message.revision);
+      if (instruction?.status === "queued") instruction.status = "delivered";
+    }
+  });
   if (lane?.kickoffPending) {
     d.store.editLane(lane.key, (current) => {
       current.kickoffPending = false;
@@ -167,7 +179,7 @@ export async function startLane(
   opts: { cwd?: string } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
-  if (key === "lead" || key === "duty" || d.sessions.known(key)) throw new Refusal(`lane key ${key} is reserved or already identifies a thread`);
+  if (key === "lead" || key === "duty" || key === "conversation" || d.sessions.known(key)) throw new Refusal(`lane key ${key} is reserved or already identifies a thread`);
   const unlock = d.store.lockAllocation(key);
   if (!unlock) throw new Refusal(`lane ${key} allocation is already in progress`);
   try { return await allocateLane(d, key, briefFile, opts); } finally { unlock(); }
@@ -178,15 +190,19 @@ async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd
   if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.threadId}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
+  const briefText = readFileSync(briefFile, "utf8").trimEnd();
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
-  await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
+  await Bun.write(briefPath, `${briefText}\n\n${footer}`);
 
   const threadId = await d.sessions.create(key, cwd, footer);
+  await Bun.write(briefPath, `${briefText}\n\n${footer}\n\nTask instance: ${threadId}. Every ack, report, ready and done command for this task must include --instance ${threadId}. READY and reports after a pivot also require the exact --revision N.\n`);
   const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
 
   const now = d.now();
   const lane: Lane = {
     key, threadId, brief: briefPath, cwd,
+    title: briefText.split("\n").find(l => l.trim())?.replace(/^#+\s*/, "").slice(0, 160) ?? key, direction: briefText.slice(0, 1000), revision: 1,
+    instructions: [{ revision: 1, text: "Initial task brief", at: now, status: "delivered" }],
     status: "working", kickoffPending: true, createdAt: now, lastActivityAt: now, nudges: 0,
     log: [{ at: now, kind: "start", text: briefFile }],
   };
@@ -205,10 +221,12 @@ async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd
   return d.store.lane(key)!;
 }
 
-export async function report(d: Deps, key: string, text: string, status?: "working" | "waiting"): Promise<void> {
+export async function report(d: Deps, key: string, text: string, status?: "working" | "waiting", revision?: number, instance?: string): Promise<void> {
   const now = d.now();
   d.store.editLane(key, (lane) => {
     if (lane.status === "done" || lane.status === "lost") throw new Refusal(`lane ${key} is ${lane.status}`);
+    checkInstance(d, lane, instance);
+    if ((revision ?? 1) !== revisionOf(lane)) throw new Refusal(`stale or missing report revision; current revision is ${revisionOf(lane)}`);
     lane.log.push({ at: now, kind: "report", text });
     lane.lastActivityAt = now; lane.nudges = 0;
     if (status) lane.status = status;
@@ -216,26 +234,31 @@ export async function report(d: Deps, key: string, text: string, status?: "worki
   await tellLead(d, `[REPORT ${key}${status === "waiting" ? " WAITING" : ""}] ${text}`, key);
 }
 
-export async function ready(d: Deps, key: string, text: string, evidence: readonly string[]): Promise<void> {
+export async function ready(d: Deps, key: string, text: string, evidence: readonly string[], revision?: number, instance?: string): Promise<void> {
   if (evidence.length === 0) throw new Refusal("READY needs at least one --evidence link (a PR, a receipt, a file)");
   if (!text.trim()) throw new Refusal("READY needs the final answer text");
   const now = d.now();
   d.store.editLane(key, (lane) => {
     if (lane.status === "done" || lane.status === "lost") throw new Refusal(`lane ${key} is ${lane.status}`);
-    lane.status = "ready"; lane.final = { text, evidence: [...evidence], at: now };
+    checkInstance(d, lane, instance);
+    const currentRevision = checkRevision(lane, revision);
+    lane.status = "ready"; lane.final = { text, evidence: [...evidence], at: now, revision: currentRevision };
     lane.lastActivityAt = now; lane.log.push({ at: now, kind: "ready", text });
   });
   await tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key);
 }
 
-export async function done(d: Deps, key: string): Promise<void> {
+export async function done(d: Deps, key: string, instance?: string): Promise<void> {
   const unlockLane = d.store.lockLaneMutation(key);
   if (!unlockLane) throw new Refusal(`lane ${key} update is busy; retry after the current update`);
   let unlockInbox: (() => void) | undefined;
   try {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
+  checkInstance(d, lane, instance);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+  if ((lane.final?.revision ?? 1) !== revisionOf(lane)) throw new Refusal("final evidence belongs to an older task revision");
+  checkRevision(lane, lane.final?.revision);
   unlockInbox = d.store.lockInbox(lane.threadId);
   if (!unlockInbox) throw new Refusal(`lane ${key} delivery is busy; finish it before closing`);
   if (d.store.queued(lane.threadId).length) throw new Refusal(`lane ${key} has queued messages; deliver them before closing`);
@@ -244,6 +267,9 @@ export async function done(d: Deps, key: string): Promise<void> {
   if (st !== "gone") await d.sessions.close(lane.threadId);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
+  // Commit the completion outbox before making this key reusable. A crash leaves
+  // READY locally, and the collector holds the candidate until DONE is persisted.
+  recordNotice(d, { task: lane.key, instance: lane.threadId, revision: revisionOf(lane), kind: "completion", summary: lane.final!.text, decision: "없음", details: lane.final!.evidence }, `done:${lane.threadId}:${revisionOf(lane)}`, lane.log.at(-1)!.at);
   d.store.saveLane(lane);
   } finally { unlockInbox?.(); unlockLane(); }
 }
@@ -265,6 +291,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   const stop = d.store.stop("duty");
   if (stop) return [{ action: "stopped", detail: stop.reason }];
   const events: DutyEvent[] = [];
+  try { recoverTaskInputs(d); } catch (e) { events.push({ action: "input-recovery-failed", detail: failureDetail(e) }); }
   for (const threadId of d.store.inboxThreads()) {
     try {
       if (await flushInbox(d, threadId)) events.push({ thread: threadId, action: "flushed" });
@@ -322,6 +349,14 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     } catch (e) {
       events.push({ lane: observed.key, action: "lane-failed", detail: failureDetail(e) });
     }
+  }
+  if (d.store.roles().conversation) {
+    try {
+      for (const lane of d.store.lanes()) if (lane.status === "done" && lane.final && (lane.final.revision ?? 1) === revisionOf(lane)) {
+        recordNotice(d, { task: lane.key, instance: lane.threadId, revision: revisionOf(lane), kind: "completion", summary: lane.final.text, decision: "없음", details: lane.final.evidence }, `done:${lane.threadId}:${revisionOf(lane)}`, lane.log.findLast(l => l.kind === "done")?.at ?? lane.final.at);
+      }
+      await flushNotices(d);
+    } catch (e) { events.push({ action: "notification-pending", detail: failureDetail(e) }); }
   }
   return events;
 }

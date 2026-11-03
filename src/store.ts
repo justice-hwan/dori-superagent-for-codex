@@ -16,15 +16,19 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  title?: string;
+  direction?: string;
+  revision?: number;
+  instructions?: { revision: number; text: string; at: number; status: "queued" | "delivered" | "acknowledged"; acknowledgedAt?: number; message?: QueuedMessage; sourceEvent?: string }[];
   kickoffPending?: boolean;
   lastInstructionBatch?: string;
-  final?: { text: string; evidence: string[]; at: number };
+  final?: { text: string; evidence: string[]; at: number; revision?: number };
   log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
 };
 
-export type Role = "lead" | "duty";
+export type Role = "lead" | "duty" | "conversation";
 
-export type QueuedMessage = { id?: string; at: number; from: string; text: string };
+export type QueuedMessage = { id?: string; at: number; from: string; text: string; mode?: "steer"; revision?: number };
 export type InboxBatch = { id: string; offset: number; messages: QueuedMessage[] };
 
 export type ReviewReceipt = {
@@ -158,13 +162,17 @@ export class Store {
     try { lease.set(role, threadId); } finally { lease.release(); }
   }
 
-  lockRoles(): { set(role: Role, threadId: string): void; release(): void } | undefined {
+  lockRoles(): { set(role: Role, threadId: string): void; setMany(roles: Partial<Record<Role, string>>): void; release(): void } | undefined {
     const lease = acquireFileLease(join(this.root, "roles.lock"));
     if (!lease) return;
     return {
       set: (role, threadId) => {
         if (!lease.holds()) throw new Error("role ownership changed during startup");
         this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: threadId });
+      },
+      setMany: (roles) => {
+        if (!lease.holds()) throw new Error("role ownership changed during startup");
+        this.writeJson(join(this.root, "roles.json"), { ...this.roles(), ...roles });
       },
       release: lease.release,
     };
@@ -181,6 +189,17 @@ export class Store {
 
   enqueue(threadId: string, msg: QueuedMessage): void {
     appendFileSync(this.inboxPath(threadId), JSON.stringify(msg) + "\n", { mode: 0o600 });
+  }
+
+  /** Caller owns its producer lock. Includes acknowledged history to prevent crash replay. */
+  enqueueOnce(threadId: string, msg: QueuedMessage & { id: string }): void {
+    const p = this.inboxPath(threadId);
+    const previous = existsSync(p) ? readFileSync(p, "utf8").split("\n").filter(Boolean).map(l => JSON.parse(l) as QueuedMessage).find(m => m.id === msg.id) : undefined;
+    if (previous) {
+      if (JSON.stringify(previous) !== JSON.stringify(msg)) throw new Error("inbox message identity conflict");
+      return;
+    }
+    this.enqueue(threadId, msg);
   }
 
   queued(threadId: string): QueuedMessage[] {

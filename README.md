@@ -16,6 +16,12 @@ flowchart LR
   Runtime --> Store[Local registry / inbox / receipts]
 ```
 
+## A calm conversation with an internal work lead
+
+Attach an existing conversation with `up --connect ws+unix:///absolute/socket --lead THREAD --split`. The separate internal work lead receives lane chatter, finds related work, steers running tasks when the owner changes direction, and verifies completion. The conversation receives compact completion batches and important decisions. Task revisions and explicit worker acknowledgements keep stale results from completing newer requests. Pages remains the dashboard, with task results organized as 요약 / 정할 것 / 상세.
+
+See [split-lead operations](docs/split-lead.md) and [upstream messenger support](docs/messengers.md). Optional Slack, Discord and Telegram behavior is adapted from upstream and remains disabled until explicitly configured; no messenger connection starts with Dori.
+
 ## Install and use
 
 Requires Bun 1.3+, Codex CLI 0.164+ with `app-server`, Git 2.38+ and a completed `codex login`. GitHub review/merge commands also need authenticated `gh` and a configured Git author identity. macOS and Linux are supported; the local transport uses a Unix socket.
@@ -48,7 +54,7 @@ dori-codex down
 dori-codex up  # reuses this home's saved connection.json and lead
 ```
 
-Only local Unix WebSockets are accepted. The lead must already be loaded (idle or active) on that server at registration. Dori rejoins with only `threadId` and `excludeTurns`; it preserves the chat's title, instructions, tools, policy and native approval flow. It creates no synthetic lead or duty model thread in this mode; duty remains a code loop. New Dori workers are named `🐾dori/{topic}` when the server supports `thread/name/set`.
+Only local Unix WebSockets are accepted. The lead must already be loaded (idle or active) on that server at registration. Dori rejoins with only `threadId` and `excludeTurns`; it preserves the chat's title, instructions, tools, policy and native approval flow. Plain shared mode creates no synthetic lead or duty model thread; explicit `--split` adds only the internal work lead, and duty remains code. New Dori workers are named `🐾dori/{topic}` when the server supports `thread/name/set`.
 
 Reports steer an active, unblocked external lead using the freshly read current turn ID. Idle leads receive a new turn. Busy workers and approval/input blocked chats keep messages queued. Both submission paths use the stable inbox batch ID. An unknown response, timeout or disconnect retains uncertainty and prevents replay; inspect native history before `reconcile`. A definitive turn precondition rejection keeps the same batch queued for a later refreshed attempt, without a fallback submission in that attempt.
 
@@ -132,7 +138,7 @@ The loop rechecks current open lanes, host load and its stop switch before each 
 
 State defaults to `~/.dori-codex`, separate from older installations. `DORI_HOME` changes it and is resolved to an absolute directory before storage, socket identity, daemon startup and generated commands. Session records, inboxes, requests and logs are private local files. The runtime listens on a mode-0600 Unix socket. A dead runtime/inbox lease is reclaimed under a serialized claim gate. A crash during the short claim section leaves a `.claim` file for explicit owner inspection; it is not automatically removed. Shutdown verifies exit of its own child, using bounded TERM/KILL escalation if needed. `DORI_CODEX_BIN` selects the Codex executable, not a shell command.
 
-There is **no usage collector, install registration, analytics key or telemetry sender in this fork**. Dori's own communication is the local runtime Unix socket and owned app-server stdio or an explicitly selected local Unix WebSocket. Codex model requests and user-configured Codex tools/providers still use their normal connections. GitHub operations use `gh`. No Slack, Notion, Kakao or other messenger connector is bundled or started.
+There is **no usage collector, install registration, analytics key or telemetry sender in this fork**. Dori's own communication is the local runtime Unix socket and owned app-server stdio or an explicitly selected local Unix WebSocket. Codex model requests and user-configured Codex tools/providers still use their normal connections. GitHub operations use `gh`. Optional Slack, Discord and Telegram primitives are adapted from upstream; none starts or reads credentials with Dori. Explicitly configured sends use the original task origin. Notion and Kakao integrations are not bundled.
 
 By default this runtime starts its own app-server with the user's existing Codex configuration. Shared mode explicitly attaches to an existing local server. Automatic visibility or immediate refresh in the Codex desktop sidebar is not guaranteed; persisted thread IDs can be opened/resumed with compatible Codex clients.
 

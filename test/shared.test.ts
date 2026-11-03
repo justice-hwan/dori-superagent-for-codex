@@ -662,3 +662,59 @@ test("shared CLI up registers this chat, persists across restart, creates no syn
     fake.stop();
   }
 }, 15_000);
+
+test("explicit owned-worker steer keeps original creation ownership and accepts no native replacement", async () => {
+  const { fake, runtime } = await setup(); const id = await runtime.create("pivot-worker", fake.home, "fixture");
+  await runtime.deliver(id, "initial direction", "initial-owner-client");
+  const original = { ...runtime.sessions.get(id)!.acceptedDelivery! }, turnId = runtime.sessions.get(id)!.ownedTurnId;
+  await runtime.steer(id, "new direction", "pivot-client");
+  expect(fake.calls.find(m => m.method === "turn/steer")?.params).toMatchObject({ threadId: id, expectedTurnId: turnId, clientUserMessageId: "pivot-client" });
+  expect(runtime.sessions.get(id)?.acceptedDelivery).toEqual(original);
+  expect(runtime.sessions.get(id)?.ownedTurnId).toBe(turnId);
+  fake.threads.get(id)!.status = { type: "active", activeFlags: ["waitingOnApproval"] };
+  await expect(runtime.steer(id, "blocked pivot", "blocked-pivot")).rejects.toThrow();
+  expect(fake.count("turn/steer")).toBe(1); expect(fake.replies).toHaveLength(0);
+  fake.thread(id, "native-replacement");
+  await expect(runtime.steer(id, "native pivot", "native-pivot")).rejects.toThrow();
+  expect(fake.count("turn/steer")).toBe(1);
+});
+
+test("owned-worker steer admission race defers once without fallback; lost reply stays uncertain after reload", async () => {
+  for (const mode of ["race", "lost"] as const) {
+    const { fake, runtime } = await setup(); const id = await runtime.create("pivot-race", fake.home, "fixture"); await runtime.deliver(id, "work", "original-client");
+    fake.hook = (m, ws) => {
+      if (m.method !== "turn/steer") return false;
+      if (mode === "race") ws.send(JSON.stringify({ id: m.id, error: { code: -32600, message: "expected turn id does not match current active turn" } }));
+      return true;
+    };
+    await expect(runtime.steer(id, "pivot", "pivot-id")).rejects.toThrow(mode === "race" ? "remains queued" : "timeout");
+    expect(runtime.sessions.get(id)?.uncertainDelivery).toBe(mode === "lost");
+    expect(fake.count("turn/start")).toBe(1); expect(fake.count("turn/steer")).toBe(1);
+    if (mode === "lost") {
+      await runtime.codex.disconnect(); const reload = new Runtime(fake.home, new Codex(fake.selected, 250), 1000, 40); fixtures.find(f => f.runtime === runtime)!.runtime = reload;
+      expect(await reload.status(id)).toBe("unknown");
+      await expect(reload.steer(id, "pivot", "pivot-id")).rejects.toThrow(); expect(fake.count("turn/steer")).toBe(1);
+    }
+  }
+});
+
+test("split up allocates one distinct work-lead identity and preserves both roles across wrapper restart", async () => {
+  const { fake } = await setup();
+  const cli = async (...args: string[]) => {
+    const child = Bun.spawn([process.execPath, join(import.meta.dir, "../src/cli.ts"), ...args], { env: { ...process.env, DORI_HOME: fake.home }, stdout: "pipe", stderr: "pipe" });
+    const [code, out, err] = await Promise.all([child.exited, new Response(child.stdout).text(), new Response(child.stderr).text()]);
+    if (code !== 0) throw new Error(err || out); return out;
+  };
+  let running = false;
+  try {
+    const first = await cli("up", "--connect", `ws+unix://${fake.path}`, "--lead", "native-lead", "--split", "--cwd", fake.home); running = true;
+    expect(first).toContain("split=true"); const store = new Store(fake.home), roles = store.roles();
+    expect(roles.conversation).toBe("native-lead"); expect(roles.lead).not.toBe(roles.conversation);
+    expect(fake.threads.get(roles.lead!)?.name).toBe("🐾dori/업무 lead");
+    const allocations = fake.count("thread/start"); await cli("up", "--cwd", fake.home);
+    expect(store.roles()).toEqual(roles); expect(fake.count("thread/start")).toBe(allocations);
+    await cli("down"); running = false; await cli("up", "--cwd", fake.home); running = true;
+    expect(store.roles()).toEqual(roles); expect(fake.count("thread/start")).toBe(allocations);
+    expect(fake.threads.get("native-lead")?.name).toBe("🐶도리 studio"); expect(fake.count("turn/start")).toBe(0);
+  } finally { if (running) await cli("down"); }
+}, 20_000);
