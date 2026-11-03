@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { socketPath } from "../src/sessions.ts";
+import { Sessions, socketPath } from "../src/sessions.ts";
 const cli = join(import.meta.dir, "../src/cli.ts");
 
 test("Unix-socket CLI: up, send, read, approval response, lane READY, close and down", async () => {
@@ -57,3 +57,30 @@ test("delayed review and submission survive server and client idle limits", asyn
     rmSync(home, { recursive: true, force: true });
   }
 }, 25_000);
+
+test("relative DORI_HOME in different project directories creates independent runtimes", async () => {
+  const root = mkdtempSync(join(tmpdir(), "dori-relative-home-")), projects = [join(root, "project-a"), join(root, "project-b")];
+  for (const p of projects) mkdirSync(p);
+  const env = { ...process.env, DORI_HOME: "state", DORI_CODEX_BIN: join(import.meta.dir, "fixtures/fake-codex.ts") };
+  const run = async (cwd: string, ...args: string[]) => {
+    const p = Bun.spawn([process.execPath, cli, ...args], { cwd, env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    if (code) throw new Error(err); return out;
+  };
+  try {
+    for (const cwd of projects) await run(cwd, "up", "--cwd", cwd);
+    const clients = projects.map(p => new Sessions(join(p, "state")));
+    expect((await clients[0]!.call("health")).pid).not.toBe((await clients[1]!.call("health")).pid);
+    for (const [i, cwd] of projects.entries()) {
+      const roles = JSON.parse(readFileSync(join(cwd, "state/roles.json"), "utf8"));
+      expect(clients[i]!.known(roles.lead)).toBe(true);
+      await run(cwd, "send", "lead", "--text", `project-${i}`);
+      for (let n = 0; n < 100 && await clients[i]!.status(roles.lead) !== "done"; n++) await Bun.sleep(10);
+      expect(await clients[i]!.read(roles.lead)).toBe(`project-${i}`);
+    }
+    expect(socketPath(join(projects[0]!, "state"))).not.toBe(socketPath(join(projects[1]!, "state")));
+  } finally {
+    for (const cwd of projects) if (existsSync(join(cwd, "state/runtime.lock"))) await run(cwd, "down").catch(() => {});
+    rmSync(root, { recursive: true, force: true });
+  }
+}, 15_000);

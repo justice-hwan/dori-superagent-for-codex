@@ -38,14 +38,14 @@ async function report(d: Context, a: PreparedMerge, readTarget: () => Promise<Pa
   a.confirmedAt = d.now(); d.store.saveMergeAttempt(a);
   let current: Pair | undefined;
   try { current = await readTarget(); } catch { /* Integration is verified separately from PR metadata. */ }
-  const label = current?.state === "MERGED" && current.head === a.head ? "MERGED" : "INTEGRATED_REVIEWED_PAIR";
-  return `${label} ${a.pr} head=${a.head} base=${a.base} branch=${a.baseBranch} commit=${a.commit} prState=${current?.state ?? "unconfirmed"}${current && current.head !== a.head ? " (PR head advanced; newer work remains separate)" : ""}`;
+  const label = current?.state === "MERGED" && current.head === a.head && current.baseBranch === a.baseBranch ? "MERGED" : "INTEGRATED_REVIEWED_PAIR";
+  return `${label} ${a.pr} head=${a.head} base=${a.base} branch=${a.baseBranch} commit=${a.commit} prState=${current?.state ?? "unconfirmed"}${current && current.head !== a.head ? " (PR head advanced; newer work remains separate)" : ""}${current && current.baseBranch !== a.baseBranch ? " (PR target changed; this integration belongs to the recorded branch)" : ""}`;
 }
 
 /** Reconcile a previous push before issuing another one. Never manufacture a second candidate after a lost response. */
 export async function recoverIntegration(d: Context, target: Target, pair: Pair, readTarget: () => Promise<Pair>): Promise<string | undefined> {
   const a = d.store.mergeAttempt(target.id);
-  if (!a || a.rejected || (a.confirmedAt && a.head !== pair.head)) return;
+  if (!a || a.rejected || (a.confirmedAt && (a.head !== pair.head || a.baseBranch !== pair.baseBranch))) return;
   if (a.pr !== target.id || a.repo !== target.repo) throw new Error("MERGE_REFUSED prepared repository mismatch");
   if (![a.head, a.base, a.tree, a.commit].every(s => SHA.test(s))) throw new Error("MERGE_REFUSED invalid prepared object id");
   await git(d, ["check-ref-format", `refs/heads/${a.baseBranch}`]);

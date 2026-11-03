@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { acquireFileLease } from "./lock.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { stateHome } from "./paths.ts";
 
 export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
 
@@ -23,7 +24,7 @@ export type Lane = {
 
 export type Role = "lead" | "duty";
 
-export type QueuedMessage = { at: number; from: string; text: string };
+export type QueuedMessage = { id?: string; at: number; from: string; text: string };
 export type InboxBatch = { id: string; offset: number; messages: QueuedMessage[] };
 
 export type ReviewReceipt = {
@@ -90,7 +91,8 @@ const checkedId = (id: string): string => {
 
 export class Store {
   constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori-codex")) {
-    for (const d of ["lanes", "inbox", "briefs", "receipts", "merges", "backlog", "loop/runs", "sessions", "duty"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
+    this.root = stateHome(root);
+    for (const d of ["lanes", "inbox", "briefs", "receipts", "merges", "backlog", "loop/runs", "sessions", "duty"]) mkdirSync(join(this.root, d), { recursive: true, mode: 0o700 });
   }
 
   private readJson<T>(path: string): T | undefined {
@@ -181,10 +183,12 @@ export class Store {
   inboxBatch(threadId: string): InboxBatch | undefined {
     const p = this.inboxPath(threadId);
     const saved = this.readJson<InboxBatch>(p + ".batch");
-    if (saved) return saved;
+    const cursor = this.readJson<number>(p + ".cursor") ?? 0;
+    if (saved && cursor < saved.offset + saved.messages.length) return saved;
+    if (saved) unlinkSync(p + ".batch"); // Cursor committed before a crash left the old batch file behind.
     const messages = this.queued(threadId);
     if (!messages.length) return undefined;
-    const batch = { id: randomUUID(), offset: this.readJson<number>(p + ".cursor") ?? 0, messages };
+    const batch = { id: randomUUID(), offset: cursor, messages };
     this.writeJson(p + ".batch", batch);
     return batch;
   }

@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
@@ -86,8 +87,9 @@ const READY_TO_READ: readonly AgentStatus[] = ["idle", "done", "failed", "recove
 export async function send(d: Deps, target: string, text: string, from: string): Promise<"DELIVERED" | "QUEUED"> {
   if (!text.trim()) throw new Refusal("message must not be empty");
   const threadId = resolveTarget(d, target);
+  const messageId = randomUUID();
   const lane = d.store.laneByThread(threadId);
-  const enqueue = () => d.store.enqueue(threadId, { at: d.now(), from, text });
+  const enqueue = () => d.store.enqueue(threadId, { id: messageId, at: d.now(), from, text });
   if (lane) {
     // Closure holds this same lease across status/archive, so new instructions
     // are either durably admitted before it or refused without being queued.
@@ -96,7 +98,8 @@ export async function send(d: Deps, target: string, text: string, from: string):
       enqueue(); return false;
     });
   } else enqueue();
-  return (await flushInbox(d, threadId)) ? "DELIVERED" : "QUEUED";
+  await flushInbox(d, threadId);
+  return d.store.queued(threadId).some(m => m.id === messageId) ? "QUEUED" : "DELIVERED";
 }
 
 export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {

@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { Codex, type RpcMessage } from "./codex.ts";
 import { socketPath, validThread, type AgentStatus } from "./sessions.ts";
 import { acquireFileLease } from "./lock.ts";
+import { stateHome } from "./paths.ts";
 
 export type Session = { id: string; name: string; cwd: string; instructions: string; status: AgentStatus; model?: string; readOnly?: boolean; everStarted?: boolean; uncertainDelivery?: boolean; requiresRecovery?: boolean; pendingDeliveryId?: string; lastDeliveryId?: string; turnId?: string; lastTurnId?: string; lastTurnStatus?: string; output: string; closed?: boolean };
 export type Request = { id: number | string; method: string; params: any };
@@ -21,6 +22,7 @@ export class Runtime {
   stopping = false;
 
   constructor(readonly home: string, readonly codex = new Codex(), private readonly reviewTimeoutMs = 1_200_000) {
+    this.home = stateHome(home);
     mkdirSync(join(home, "sessions"), { recursive: true, mode: 0o700 });
     for (const f of readdirSync(join(home, "sessions"))) {
       if (!f.endsWith(".json")) continue;
@@ -276,6 +278,7 @@ export class Runtime {
 }
 
 export async function serve(home: string, onTick: () => Promise<void> = async () => {}): Promise<never> {
+  home = stateHome(home);
   process.umask(0o077);
   mkdirSync(home, { recursive: true, mode: 0o700 });
   const lock = join(home, "runtime.lock");

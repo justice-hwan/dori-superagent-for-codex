@@ -1,10 +1,12 @@
 import { openSync, closeSync, mkdirSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { join } from "node:path";
+import { stateHome } from "./paths.ts";
 import { Sessions } from "./sessions.ts";
 
 /** Launch only our own local runtime; never restart or change the user's shared Codex daemon. */
 export async function ensureRuntime(home: string, autoLoop = false): Promise<void> {
+  home = stateHome(home);
   const client = new Sessions(home);
   try { await client.call("health"); return; } catch { /* not running */ }
   mkdirSync(home, { recursive: true, mode: 0o700 });

@@ -72,3 +72,25 @@ test("a lost push response is reconciled from the saved candidate without a dupl
     expect(pushes).toBe(1); expect(f.store.mergeAttempt(f.target.id)?.commit).toBe(prepared.commit);
   } finally { rmSync(f.root, { recursive: true, force: true }); }
 });
+
+test("retargeting after the push keeps the old integration historical and permits a separately reviewed target", async () => {
+  const f = await fixture(); let pushed = false, secondPush = false;
+  f.git("--git-dir", f.bare, "update-ref", "refs/heads/release", f.advance);
+  const releaseTip = () => f.git("--git-dir", f.bare, "rev-parse", "refs/heads/release");
+  const exec: Exec = async (cmd, args) => {
+    const r = await f.exec(cmd, args);
+    if (cmd === "git" && args.includes("push")) { if (pushed) secondPush = true; pushed = true; }
+    return r;
+  };
+  const readTarget = async (): Promise<Pair> => pushed ? { ...f.pair, baseBranch: "release", base: releaseTip(), state: secondPush ? "MERGED" : "OPEN" } : f.pair;
+  const d = { ...f, exec, now: Date.now };
+  try {
+    const first = await integratePair(d, f.target, f.pair, readTarget);
+    expect(first).toStartWith("INTEGRATED_REVIEWED_PAIR"); expect(first).toContain("PR target changed");
+    const mainCommit = f.tip(); const releasePair = await readTarget();
+    expect(await recoverIntegration(d, f.target, releasePair, readTarget)).toBeUndefined();
+    expect(await integratePair(d, f.target, releasePair, readTarget)).toStartWith("MERGED");
+    expect(f.tip()).toBe(mainCommit);
+    expect(f.git("show", "-s", "--format=%P", releaseTip())).toBe(`${f.advance} ${f.pair.head}`);
+  } finally { rmSync(f.root, { recursive: true, force: true }); }
+});

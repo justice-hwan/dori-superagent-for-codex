@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stateHome } from "./paths.ts";
 
 export type AgentStatus = "idle" | "working" | "blocked" | "done" | "failed" | "recovery" | "unknown" | "gone";
 export interface SessionRuntime {
@@ -16,10 +17,10 @@ export interface SessionRuntime {
 
 export const validThread = (id: string) => /^[a-zA-Z0-9_-]{1,100}$/.test(id);
 // Unix sockets have a short platform limit; private state directories may have very long names.
-export const socketPath = (home: string) => join(tmpdir(), `dori-codex-${process.getuid?.() ?? "user"}-${createHash("sha256").update(home).digest("hex").slice(0, 16)}.sock`);
+export const socketPath = (home: string) => join(tmpdir(), `dori-codex-${process.getuid?.() ?? "user"}-${createHash("sha256").update(stateHome(home)).digest("hex").slice(0, 16)}.sock`);
 
 export class Sessions implements SessionRuntime {
-  constructor(readonly home: string) {}
+  constructor(readonly home: string) { this.home = stateHome(home); }
   known(id: string): boolean { return validThread(id) && existsSync(join(this.home, "sessions", `${id}.json`)); }
 
   async call<T = any>(method: string, args: unknown = {}): Promise<T> {

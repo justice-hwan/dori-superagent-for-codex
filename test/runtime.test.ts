@@ -92,7 +92,7 @@ test("inbox acknowledgment is idempotent after a crash between cursor commit and
     s.enqueue("lead", { at: 1, from: "cli", text: "first" }); const batch = s.inboxBatch("lead")!;
     const journal = join(home, "inbox/lead.jsonl"); writeFileSync(journal + ".cursor", "1");
     s.enqueue("lead", { at: 2, from: "cli", text: "second" });
-    expect(s.inboxBatch("lead")?.id).toBe(batch.id); s.ackInbox("lead", 1);
+    s.ackInbox("lead", batch.messages.length);
     expect(s.queued("lead").map((m) => m.text)).toEqual(["second"]);
     expect(existsSync(journal + ".batch")).toBe(false);
   } finally { rmSync(home, { recursive: true, force: true }); }

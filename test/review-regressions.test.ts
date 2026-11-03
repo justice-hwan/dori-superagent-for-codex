@@ -282,3 +282,19 @@ test("duty preserves underscore and colon thread IDs without inbox aliasing", as
   expect(underscore.received).toEqual(["underscore work"]); expect(colon.received).toEqual(["colon work"]);
   expect(d.store.inboxThreads()).toEqual([]);
 });
+
+test("send reports its own message, discards cursor-covered batches, and never replays them", async () => {
+  const { send, flushInbox } = await import("../src/harness.ts");
+  for (const cursorCommitted of [true, false]) {
+    const w = new World(), d = w.deps(); homes.push(d.store.root); w.addThread("lead"); d.store.setRole("lead", "lead");
+    d.store.enqueue("lead", { at: 1, from: "old", text: "already accepted" }); const old = d.store.inboxBatch("lead")!;
+    if (cursorCommitted) writeFileSync(join(d.store.root, "inbox/lead.jsonl.cursor"), "1");
+    const delivered: string[] = [];
+    d.sessions.deliver = async (_id, text, batch) => { if (batch !== old.id) delivered.push(text); };
+    const result = await send(d, "lead", "new input", "cli");
+    expect(result).toBe(cursorCommitted ? "DELIVERED" : "QUEUED");
+    expect(delivered).toEqual(cursorCommitted ? ["new input"] : []);
+    if (!cursorCommitted) { expect(d.store.queued("lead").map(m => m.text)).toEqual(["new input"]); await flushInbox(d, "lead"); }
+    expect(delivered).toEqual(["new input"]); expect(d.store.queued("lead")).toEqual([]);
+  }
+});

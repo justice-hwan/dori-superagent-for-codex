@@ -63,3 +63,15 @@ test("CI is queried by captured SHA and a moved head cannot reach integration", 
     expect(w.calls.some(c => c.cmd === "git")).toBe(false);
   } finally { rmSync(d.store.root, { recursive: true, force: true }); }
 });
+
+test("a historical confirmed integration cannot bypass a retargeted PR's new receipt", async () => {
+  const w = new World(), d = w.deps(), head = "a".repeat(40), base = "b".repeat(40); let branch = "main";
+  w.gh = () => ({ code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: base, baseRefName: branch, state: "OPEN", isDraft: false }) });
+  try {
+    await review(d, "o/r#1");
+    d.store.saveMergeAttempt({ pr: "o/r#1", repo: "o/r", head, base, baseBranch: "main", tree: "c".repeat(40), commit: "d".repeat(40), confirmedAt: 1 });
+    branch = "release";
+    await expect(mergeGate(d, "o/r#1")).rejects.toThrow("base changed");
+    expect(w.calls.some(c => c.cmd === "git")).toBe(false);
+  } finally { rmSync(d.store.root, { recursive: true, force: true }); }
+});
