@@ -4,8 +4,12 @@ import { acquireFileLease } from "./lock.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stateHome } from "./paths.ts";
+import type { MessengerOrigin } from "./messenger.ts";
 
 export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
+
+export type TaskOrigin = { kind: "codex"; threadId: string } | { kind: "messenger"; origin: MessengerOrigin } | { kind: "unknown" };
+export type Completion = { task: string; instance: string; revision: number; summary: string; decision: string; details: string[]; origin: TaskOrigin; at: number };
 
 export type Lane = {
   key: string;
@@ -16,6 +20,8 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  origin?: TaskOrigin;
+  completions?: Completion[];
   title?: string;
   direction?: string;
   revision?: number;
@@ -115,6 +121,13 @@ export class Store {
 
   saveLane(lane: Lane): void {
     checkedId(lane.key);
+    const previous = this.lane(lane.key);
+    if (previous?.threadId === lane.threadId && previous.origin && JSON.stringify(previous.origin) !== JSON.stringify(lane.origin)) throw new Error("task origin is immutable after allocation");
+    for (const receipt of previous?.completions ?? []) if (!(lane.completions ?? []).some(r => JSON.stringify(r) === JSON.stringify(receipt))) throw new Error("committed completion history must be retained");
+    for (const receipt of lane.completions ?? []) {
+      if ((previous?.completions ?? []).some(r => JSON.stringify(r) === JSON.stringify(receipt))) continue;
+      if (lane.status !== "done" || receipt.task !== lane.key || receipt.instance !== lane.threadId || receipt.revision !== (lane.revision ?? 1) || receipt.revision !== (lane.final?.revision ?? 1) || receipt.summary !== lane.final?.text || JSON.stringify(receipt.details) !== JSON.stringify(lane.final?.evidence) || JSON.stringify(receipt.origin) !== JSON.stringify(lane.origin ?? { kind: "unknown" })) throw new Error("completion receipt requires the same atomic DONE record");
+    }
     this.writeJson(join(this.root, "lanes", `${lane.key}.json`), lane);
   }
 

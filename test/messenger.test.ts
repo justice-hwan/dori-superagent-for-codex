@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { Discord, discordPresence, Slack, slackPresence, Telegram, THINKING, startThinking, htmlTable, typingWhile, transcribe, TranscriptionError, MessengerError, MessengerUncertain, UnsafeMessageError, MessengerJournal, sendMessenger, ThreadLedger, pollSlackInbound, tsAfter, type Http, type HttpRequest, type HttpResponse, type MessengerOrigin } from "../src/messenger.ts";
 const fakeClock = (at: number) => ({ at, now() { return this.at; }, async sleep(ms: number) { this.at += ms; } });
@@ -275,4 +276,28 @@ test("a new owner follow-up source message is accepted on the bound route while 
   expect((await journal.acceptInbound(followup, { ownerId: "OWNER", verify: async () => true, task: "task-instance" })).duplicate).toBe(false);
   expect(journal.origin("task-instance")?.sourceMessage).toBe("initial-owner-message");
   for (const patch of [{ account: "other" }, { workspace: "other" }, { target: "other" }, { thread: "other" }]) await expect(journal.acceptInbound({ ...followup, id: "other-event", origin: { ...followup.origin, ...patch } }, { ownerId: "OWNER", verify: async () => true, task: "task-instance" })).rejects.toThrow("does not match");
+});
+
+test("reconciliation refuses a live sender lease and cannot overwrite its eventual receipt", async () => {
+  const root = temporary(), journal = new MessengerJournal(root), origin: MessengerOrigin = { platform: "slack", account: "a", target: "c" };
+  let release!: (value: { messageId: string }) => void, entered!: () => void;
+  const waiting = new Promise<{ messageId: string }>(r => release = r), called = new Promise<void>(r => entered = r);
+  const sending = journal.deliver("active-send", origin, "result", async () => { entered(); return waiting; }); await called;
+  expect(() => journal.reconcile("active-send", false)).toThrow("still in progress");
+  expect(new MessengerJournal(root).outgoing()[0]!.state).toBe("sending");
+  release({ messageId: "posted" }); await sending;
+  expect(journal.outgoing()[0]).toMatchObject({ state: "sent", messageId: "posted" });
+  expect(() => journal.reconcile("active-send", false)).toThrow("only uncertain");
+});
+
+test("a crashed sending intent can reconcile after stale delivery lease recovery", async () => {
+  const root = temporary(), journal = new MessengerJournal(root), origin: MessengerOrigin = { platform: "telegram", account: "a", target: "chat" };
+  await expect(journal.deliver("crashed-send", origin, "result", async () => { throw new Error("lost response"); })).rejects.toThrow(MessengerUncertain);
+  const file = join(root, "messenger", "journal.json"), state = JSON.parse(readFileSync(file, "utf8"));
+  Object.values(state.outgoing).forEach((record: any) => record.state = "sending"); writeFileSync(file, JSON.stringify(state));
+  const child = Bun.spawn([process.execPath, "-e", "process.exit(0)"], { stdout: "ignore", stderr: "ignore" }); await child.exited;
+  const idHash = createHash("sha256").update(JSON.stringify("crashed-send")).digest("hex");
+  writeFileSync(join(root, "messenger", `delivery-${idHash}.lock`), JSON.stringify({ pid: child.pid, nonce: "dead-sender" }));
+  new MessengerJournal(root).reconcile("crashed-send", true, "verified-message");
+  expect(journal.outgoing()[0]).toMatchObject({ state: "sent", messageId: "verified-message" });
 });

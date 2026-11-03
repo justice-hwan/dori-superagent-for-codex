@@ -5,11 +5,12 @@ import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
 import { shq, spawnExec, type Exec } from "./process.ts";
 import { Sessions, DeliveryDeferred, type SessionRuntime, type AgentStatus } from "./sessions.ts";
-import { KEY_RE, Store, type HostLoad, type Lane, type Role } from "./store.ts";
+import { KEY_RE, Store, type HostLoad, type Lane, type Role, type TaskOrigin } from "./store.ts";
 import { prepareReviewSnapshot } from "./review-snapshot.ts";
 import { integratePair, recoverIntegration, type Pair } from "./merge.ts";
 import { checkInstance, checkRevision, recoverTaskInputs, revisionOf } from "./tasks.ts";
-import { flushNotices, recordNotice } from "./notifications.ts";
+import { MessengerJournal, checkedOrigin, type MessengerOrigin } from "./messenger.ts";
+import { flushNotices, recordNotice, validNoticeBatch } from "./notifications.ts";
 type MergeOutcome = "merged" | "no_receipt" | "review_block" | "no_checks" | "checks_red" | "checks_all_skipped";
 
 export { KEY_RE };
@@ -120,6 +121,7 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
     batch = d.store.inboxBatch(threadId)!;
   }
   const queued = batch.messages;
+  for (const message of queued) if (message.from === "work-lead" && message.id?.startsWith("notice-") && !validNoticeBatch(d, message.id.slice(7), threadId)) throw new Refusal("queued notice has no confirmed captured route/completion proof; retained for inspection");
   const body =
     queued.length === 1
       ? queued[0]!.text
@@ -176,7 +178,7 @@ export async function startLane(
   d: Deps,
   key: string,
   briefFile: string,
-  opts: { cwd?: string } = {},
+  opts: { cwd?: string; origin?: MessengerOrigin } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   if (key === "lead" || key === "duty" || key === "conversation" || d.sessions.known(key)) throw new Refusal(`lane key ${key} is reserved or already identifies a thread`);
@@ -185,9 +187,11 @@ export async function startLane(
   try { return await allocateLane(d, key, briefFile, opts); } finally { unlock(); }
 }
 
-async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd?: string }): Promise<Lane> {
+async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd?: string; origin?: MessengerOrigin }): Promise<Lane> {
   const existing = d.store.lane(key);
   if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.threadId}`);
+  const conversation = d.store.roles().conversation ?? d.store.roles().lead;
+  const origin: TaskOrigin = opts.origin ? { kind: "messenger", origin: checkedOrigin(opts.origin) } : conversation ? { kind: "codex", threadId: conversation } : { kind: "unknown" };
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const briefText = readFileSync(briefFile, "utf8").trimEnd();
@@ -200,13 +204,14 @@ async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd
 
   const now = d.now();
   const lane: Lane = {
-    key, threadId, brief: briefPath, cwd,
+    key, threadId, brief: briefPath, cwd, origin, completions: existing?.completions ?? [],
     title: briefText.split("\n").find(l => l.trim())?.replace(/^#+\s*/, "").slice(0, 160) ?? key, direction: briefText.slice(0, 1000), revision: 1,
     instructions: [{ revision: 1, text: "Initial task brief", at: now, status: "delivered" }],
     status: "working", kickoffPending: true, createdAt: now, lastActivityAt: now, nudges: 0,
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
+  if (origin.kind === "messenger") new MessengerJournal(d.store.root).bindTask(threadId, origin.origin);
   try {
     if (await send(d, threadId, kickoff, "lead") !== "DELIVERED") throw new Refusal("kickoff queued; inspect the existing lane before retrying");
   } catch (e) {
@@ -267,10 +272,13 @@ export async function done(d: Deps, key: string, instance?: string): Promise<voi
   if (st !== "gone") await d.sessions.close(lane.threadId);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
-  // Commit the completion outbox before making this key reusable. A crash leaves
-  // READY locally, and the collector holds the candidate until DONE is persisted.
-  recordNotice(d, { task: lane.key, instance: lane.threadId, revision: revisionOf(lane), kind: "completion", summary: lane.final!.text, decision: "없음", details: lane.final!.evidence }, `done:${lane.threadId}:${revisionOf(lane)}`, lane.log.at(-1)!.at);
+  const completion = { task: lane.key, instance: lane.threadId, revision: revisionOf(lane), summary: lane.final!.text, decision: "없음", details: lane.final!.evidence, origin: lane.origin ?? { kind: "unknown" as const }, at: lane.log.at(-1)!.at };
+  lane.completions = [...(lane.completions ?? []), completion];
+  // One atomic lane write commits DONE and its exact instance/revision receipt.
+  // Allocation carries these immutable receipts forward when reusing the key.
   d.store.saveLane(lane);
+  try { recordNotice(d, { task: completion.task, instance: completion.instance, revision: completion.revision, kind: "completion", summary: completion.summary, decision: completion.decision, details: completion.details }, `done:${completion.instance}:${completion.revision}`, completion.at); }
+  catch { process.stderr.write("dori: task completion committed; duty will recover notification admission\n"); }
   } finally { unlockInbox?.(); unlockLane(); }
 }
 
@@ -352,8 +360,8 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   }
   if (d.store.roles().conversation) {
     try {
-      for (const lane of d.store.lanes()) if (lane.status === "done" && lane.final && (lane.final.revision ?? 1) === revisionOf(lane)) {
-        recordNotice(d, { task: lane.key, instance: lane.threadId, revision: revisionOf(lane), kind: "completion", summary: lane.final.text, decision: "없음", details: lane.final.evidence }, `done:${lane.threadId}:${revisionOf(lane)}`, lane.log.findLast(l => l.kind === "done")?.at ?? lane.final.at);
+      for (const lane of d.store.lanes()) for (const completion of lane.completions ?? []) {
+        recordNotice(d, { task: completion.task, instance: completion.instance, revision: completion.revision, kind: "completion", summary: completion.summary, decision: completion.decision, details: completion.details }, `done:${completion.instance}:${completion.revision}`, completion.at);
       }
       await flushNotices(d);
     } catch (e) { events.push({ action: "notification-pending", detail: failureDetail(e) }); }

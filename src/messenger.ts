@@ -2,7 +2,7 @@
 // upstream 90f02c19fd86ce70cfd6a74f521c9acd24428cc3, skills/dori-mode/scripts/src/messenger/.
 // Importing this module starts no connection and reads no credentials.
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { acquireFileLease } from "./lock.ts";
 export type Clock = { now(): number; sleep(ms: number): Promise<void> };
@@ -369,7 +369,7 @@ const checked = (value: string, label: string): string => {
   if (typeof value !== "string" || !value.trim() || value.length > 512 || /[\r\n\0]/.test(value)) throw new Error(`invalid messenger ${label}`);
   return value;
 };
-const checkedOrigin = (origin: MessengerOrigin, requireAccount = true): MessengerOrigin => {
+export const checkedOrigin = (origin: MessengerOrigin, requireAccount = true): MessengerOrigin => {
   if (!["slack", "telegram", "discord"].includes(origin.platform)) throw new Error("unknown messenger platform");
   checked(origin.target, "target"); if (requireAccount && !origin.account) throw new Error("messenger origin requires an explicit account identity"); if (origin.workspace !== undefined) checked(origin.workspace, "workspace"); if (origin.sourceMessage !== undefined) checked(origin.sourceMessage, "source message"); if (origin.thread !== undefined) checked(origin.thread, "thread"); if (origin.account !== undefined) checked(origin.account, "account");
   if (origin.platform === "discord" && ![origin.target, origin.thread ?? origin.target].every(x => /^[a-zA-Z0-9_-]+$/.test(x))) throw new Error("invalid discord route");
@@ -428,6 +428,20 @@ export class MessengerJournal {
   bindings(): Record<string, MessengerOrigin> { return this.read().bindings; }
   bindTask(task: string, origin: MessengerOrigin): void {
     taskKey(task); const normalized = checkedOrigin(origin);
+    // A task's route is chosen before kickoff, never inferred from a late bind.
+    const lanes = join(this.root, "..", "lanes");
+    if (existsSync(lanes)) for (const file of readdirSync(lanes).filter(f => f.endsWith(".json"))) {
+      const lane = JSON.parse(readFileSync(join(lanes, file), "utf8"));
+      if (lane.threadId !== task) continue;
+      if (lane.origin?.kind === "messenger") {
+        if (originKey(lane.origin.origin) !== originKey(normalized)) throw new Error("task origin is immutable after allocation");
+      } else if (lane.origin?.kind === "codex") throw new Error("task already has a Codex origin; late messenger binding is refused");
+      else {
+        const outbox = join(this.root, "..", "notifications.json");
+        const hasNotice = existsSync(outbox) && JSON.parse(readFileSync(outbox, "utf8")).notices?.some((n: any) => n.instance === task);
+        if (lane.kickoffPending !== true || lane.lastInstructionBatch || lane.final || hasNotice || (lane.instructions ?? []).some((i: any) => i.status !== "queued")) throw new Error("legacy messenger binding is allowed only before task admission");
+      }
+    }
     this.edit(state => { const old = Object.hasOwn(state.bindings, task) ? state.bindings[task] : undefined; if (old && originKey(old) !== originKey(normalized)) throw new Error("task is already bound to another messenger origin"); Object.defineProperty(state.bindings, task, { value: normalized, enumerable: true, configurable: true, writable: true }); });
   }
   origin(task: string): MessengerOrigin | undefined { const bindings = this.read().bindings; taskKey(task); return Object.hasOwn(bindings, task) ? bindings[task] : undefined; }
@@ -484,8 +498,12 @@ export class MessengerJournal {
     const origin = this.origin(task); if (!origin) throw new Error("task has no messenger origin"); return this.deliver(id, origin, text, () => send(origin));
   }
   reconcile(id: string, delivered: boolean, messageId?: string): void {
-    if (delivered) checked(messageId!, "receipt");
-    this.edit(state => { const old = state.outgoing[hash(id)]; if (!old || !["sending", "uncertain"].includes(old.state)) throw new Error("only uncertain delivery can be reconciled"); old.state = delivered ? "sent" : "rejected"; if (delivered) old.messageId = messageId; });
+    checked(id, "delivery id"); if (delivered) checked(messageId!, "receipt");
+    const lease = acquireFileLease(join(this.root, `delivery-${hash(id)}.lock`));
+    if (!lease) throw new Error("messenger delivery is still in progress; reconciliation refused");
+    try {
+      this.edit(state => { const old = state.outgoing[hash(id)]; if (!old || !["sending", "uncertain"].includes(old.state)) throw new Error("only uncertain delivery can be reconciled"); old.state = delivered ? "sent" : "rejected"; if (delivered) old.messageId = messageId; });
+    } finally { lease.release(); }
   }
 }
 

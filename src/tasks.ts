@@ -15,7 +15,10 @@ export function findTasks(d: Deps, query = ""): Lane[] {
 }
 export function taskFor(d: Deps, selector: string, includeClosed = false): Lane {
   const exact = (KEY_RE.test(selector) ? d.store.lane(selector) : undefined) ?? d.store.lanes().find(l => l.threadId === selector);
-  if (exact && (includeClosed || (exact.status !== "done" && exact.status !== "lost"))) return exact;
+  if (exact) {
+    if (!includeClosed && (exact.status === "done" || exact.status === "lost")) throw new Refusal("the exact task instance is closed; choose an open task explicitly");
+    return exact;
+  }
   const candidates = findTasks(d, selector);
   if (candidates.length !== 1) throw new Refusal(`task selection ${candidates.length ? "is ambiguous" : "did not match"}; use a lane key${candidates.length ? `: ${candidates.map(l => l.key).join(", ")}` : ""}`);
   return candidates[0]!;

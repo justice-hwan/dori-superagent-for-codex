@@ -11,13 +11,14 @@ export async function admitMessengerRequest(d: Deps, event: InboundEnvelope, opt
   if (saved.handledAt) return;
   const source = `messenger-${createHash("sha256").update(JSON.stringify([event.origin.platform, event.origin.account, event.origin.workspace, event.id])).digest("hex")}`;
   if (result.task) {
-    const task = taskFor(d, result.task);
+    const task = d.store.lanes().find(l => l.threadId === result.task);
+    if (!task || task.status === "done" || task.status === "lost") throw new Refusal("the bound messenger task instance is not open");
     await pivot(d, task.threadId, result.event.text, undefined, source);
   } else {
     const lead = d.store.roles().lead;
     if (!lead) throw new Refusal("no work lead is registered; inbound remains unhandled");
     d.store.enqueueOnce(lead, { id: source, at: saved.receivedAt, from: source,
-      text: `[MESSENGER REQUEST ${source}]\nCaptured origin: ${JSON.stringify(result.event.origin)}\nOwner request: ${result.event.text}\nCreate or identify the task, then bind its native thread instance to this captured origin with messenger bind. Raw progress stays internal; replies use the bound origin only.` });
+      text: `[MESSENGER REQUEST ${source}]\nCaptured origin: ${JSON.stringify(result.event.origin)}\nOwner request: ${result.event.text}\nCreate the task with start --origin FILE containing exactly this captured origin before kickoff; never start first and bind later. Raw progress stays internal; replies use the bound origin only.` });
     // Local durable admission, independent of whether the busy coordinator can receive now.
     journal.markInboundHandled(event.origin.platform, event.origin.account, event.id, event.origin.workspace);
     await flushInbox(d, lead); return;

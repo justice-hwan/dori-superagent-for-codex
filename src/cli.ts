@@ -29,7 +29,7 @@ const USAGE = `dori-codex - a local multi-session harness on Codex app-server
   dori-codex notify KEY --kind decision|failure --text T [--decision Q]
   dori-codex up --owned                            explicitly select owned stdio mode while stopped
   dori-codex role <lead|duty|conversation> [THREAD]                register an existing Dori-owned thread
-  dori-codex start <key> --brief FILE [--cwd DIR]   start a Codex thread from a brief + lane rules
+  dori-codex start <key> --brief FILE [--cwd DIR] [--origin FILE]   start a Codex thread from a brief + lane rules
   dori-codex report <key> [--instance THREAD] [--revision N] --text T [--status working|waiting]
   dori-codex ready <key> [--instance THREAD] [--revision N] --text T --evidence LINK [--evidence LINK ...]
   dori-codex send <lead|duty|key|thread> --text T     deliver now, or queue until the thread is idle
@@ -217,6 +217,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "start": {
       const lane = await startLane(d, need(x, "lane key"), need(one(a, "brief"), "--brief"), {
         cwd: one(a, "cwd"),
+        origin: one(a, "origin") ? JSON.parse(readFileSync(one(a, "origin")!, "utf8")) : undefined,
       });
       console.log(`STARTED ${lane.key} thread=${lane.threadId} brief=${lane.brief}`);
       return 0;
@@ -224,7 +225,12 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     case "messenger": {
       const journal = new MessengerJournal(d.store.root);
       if (x === undefined || x === "status") { console.log(JSON.stringify({ bindings: journal.bindings(), inbound: journal.inbound(), outgoing: journal.outgoing() }, null, 2)); return 0; }
-      if (x === "bind") { const lane = taskFor(d, need(a.pos[2], "task selector")); journal.bindTask(lane.threadId, JSON.parse(readFileSync(need(one(a, "origin"), "--origin FILE"), "utf8"))); console.log(`BOUND ${lane.key}`); return 0; }
+      if (x === "bind") {
+        const lane = taskFor(d, need(a.pos[2], "task selector")), origin = JSON.parse(readFileSync(need(one(a, "origin"), "--origin FILE"), "utf8"));
+        // New tasks already capture their route at allocation. This command can
+        // confirm that binding, never retarget a task after admission.
+        journal.bindTask(lane.threadId, origin); console.log(`BOUND ${lane.key}`); return 0;
+      }
       if (x === "reconcile") { const delivered = one(a, "delivered"); if (delivered !== "true" && delivered !== "false") throw new Refusal("inspect platform history then supply --delivered true|false"); journal.reconcile(need(a.pos[2], "delivery id"), delivered === "true", one(a, "message")); console.log("RECONCILED"); return 0; }
       if (x === "report" || x === "reply") {
         // Read explicit configuration only at the user's requested send command.
