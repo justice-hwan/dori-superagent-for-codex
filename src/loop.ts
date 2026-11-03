@@ -1,6 +1,6 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
-// never pushes, never closes a pane and never edits a lane record. See docs/hourly-loop.md.
+// never pushes, never closes a thread and never edits a lane record. See docs/hourly-loop.md.
 import { appendFileSync, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -286,13 +286,13 @@ async function audit(d: Deps, run: LoopRun): Promise<void> {
     if (lane.status !== "working" && lane.status !== "waiting" && lane.status !== "ready") continue;
     let st;
     try {
-      st = await d.herdr.status(lane.paneId);
+      st = await d.sessions.status(lane.threadId);
     } catch (e) {
-      run.findings.push(`herdr: ${lane.key}: ${e instanceof Error ? e.message : String(e)}`);
+      run.findings.push(`Codex: ${lane.key}: ${e instanceof Error ? e.message : String(e)}`);
       continue;
     }
     if (st === "gone") {
-      run.findings.push(`${lane.key} pane ${lane.paneId} is gone`);
+      run.findings.push(`${lane.key} thread ${lane.threadId} is gone`);
     } else if (lane.status === "ready") {
       const age = now - (lane.final?.at ?? lane.lastActivityAt);
       if (age >= READY_HOURS * HOUR) run.findings.push(`${lane.key} READY ${hours(age)}h ago, not closed: dori done ${lane.key}`);
@@ -309,7 +309,7 @@ const isOpenLane = (status: string): boolean => status !== "done" && status !== 
 
 async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, maxLoad: number | undefined, nonce: string): Promise<void> {
   if (!d.store.roles().lead) {
-    run.held.push("no lead pane registered");
+    run.held.push("no lead thread registered");
     return;
   }
   const host = d.host();
@@ -343,7 +343,7 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
         run.findings.push(`start ${item.id} failed: ${why}`);
         continue;
       }
-      run.findings.push(`${item.id} started in ${lane.paneId} but the lead was not told: ${why}`);
+      run.findings.push(`${item.id} started in ${lane.threadId} but the lead was not told: ${why}`);
     }
     item.status = "running";
     log(d, item, "start", "lane opened by the hourly loop");

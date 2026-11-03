@@ -3,20 +3,20 @@ import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, dutyTick, memFreePct, ready, Refusal, report, startLane } from "../src/harness.ts";
 import { backlogAdd, backlogDecide, backlogDrop, backlogImport, HOUR, importId, loopTick, msUntilNext, restore } from "../src/loop.ts";
-import type { Exec } from "../src/herdr.ts";
+import type { Exec } from "../src/process.ts";
 import { World } from "./fake.ts";
 
 function setup(opts: { lead?: boolean; exec?: (inner: Exec) => Exec } = {}) {
   const w = new World();
   if (opts.exec) w.exec = opts.exec(w.exec);
   const d = w.deps();
-  const lead = w.addPane("w1:p1", "idle");
+  const lead = w.addThread("w1:p1", "idle");
   if (opts.lead !== false) d.store.setRole("lead", "w1:p1");
   const brief = join(d.store.root, "brief.md");
   writeFileSync(brief, "Do the thing.");
   const add = (id: string, o: Parameters<typeof backlogAdd>[3] = {}) => backlogAdd(d, id, brief, { cwd: d.store.root, ...o });
   const tick = (o: Parameters<typeof loopTick>[1] = {}) => loopTick(d, { force: true, ...o });
-  const destructive = () => w.calls.filter((c) => c.argv.join(" ").match(/pane close|pr merge|push/));
+  const destructive = () => w.calls.filter((c) => (c.cmd === "sessions" && c.argv[0] === "close") || (c.cmd === "gh" && (c.argv[1] === "merge" || c.argv[0] === "push")));
   return { w, d, lead, brief, add, tick, destructive };
 }
 
@@ -80,7 +80,7 @@ describe("hourly loop", () => {
     expect(run.started).toEqual(["urgent (p1)", "old-five (p5)"]);
     expect(run.held).toEqual(["2 item(s) waiting: 1 free of 3 lanes, max 2/run"]);
     expect(d.store.item("urgent")!.status).toBe("running");
-    expect(w.panes.get(d.store.lane("urgent")!.paneId)!.ran[0]).toStartWith("omo 'Read your brief at ");
+    expect(w.threads.get(d.store.lane("urgent")!.threadId)!.received[0]).toStartWith("Read your brief at ");
     expect(lead.received.filter((m) => m.startsWith("[START"))).toHaveLength(2);
     const loopMsg = lead.received.find((m) => m.startsWith("[LOOP"))!;
     expect(loopMsg).toContain("lanes 2/3");
@@ -108,8 +108,8 @@ describe("hourly loop", () => {
     const { w, d, brief, add, tick } = setup();
     add("next");
     add("blocked", { priority: 1, decision: "which database?" });
-    await startLane(d, "hand-a", brief, { workspace: "w1" });
-    await startLane(d, "hand-b", brief, { workspace: "w1" });
+    await startLane(d, "hand-a", brief);
+    await startLane(d, "hand-b", brief);
     const full = await tick({ maxLanes: 2 });
     expect(full.started).toEqual([]);
     expect(full.held[0]).toContain("0 free of 2 lanes");
@@ -134,10 +134,10 @@ describe("hourly loop", () => {
 
     const a = d.store.lane("item-a")!;
     await ready(d, "item-a", "fixed", ["note.txt"]);
-    w.panes.get(a.paneId)!.status = "idle";
+    w.threads.get(a.threadId)!.status = "idle";
     await done(d, "item-a");
 
-    w.panes.delete(d.store.lane("item-b")!.paneId);
+    w.threads.delete(d.store.lane("item-b")!.threadId);
     const lost = d.store.lane("item-b")!;
     lost.status = "lost";
     d.store.saveLane(lost);
@@ -173,21 +173,21 @@ describe("hourly loop", () => {
 
   test("audit flags stale, long-waiting, unclosed-READY and vanished lanes without touching them", async () => {
     const { w, d, brief, tick, destructive } = setup();
-    const quiet = await startLane(d, "quiet", brief, { workspace: "w1" });
-    const busy = await startLane(d, "busy", brief, { workspace: "w1" });
-    const wait = await startLane(d, "wait-ci", brief, { workspace: "w1" });
-    const fin = await startLane(d, "finished", brief, { workspace: "w1" });
-    const gone = await startLane(d, "vanished", brief, { workspace: "w1" });
-    await startLane(d, "fresh", brief, { workspace: "w1" });
+    const quiet = await startLane(d, "quiet", brief);
+    const busy = await startLane(d, "busy", brief);
+    const wait = await startLane(d, "wait-ci", brief);
+    const fin = await startLane(d, "finished", brief);
+    const gone = await startLane(d, "vanished", brief);
+    await startLane(d, "fresh", brief);
     await report(d, "wait-ci", "WAITING: CI on acme/app#3", "waiting");
     await ready(d, "finished", "done", ["https://github.com/acme/app/pull/3"]);
-    for (const l of [quiet, wait, fin]) w.panes.get(l.paneId)!.status = "idle";
-    w.panes.get(busy.paneId)!.status = "working";
-    w.panes.delete(gone.paneId);
+    for (const l of [quiet, wait, fin]) w.threads.get(l.threadId)!.status = "idle";
+    w.threads.get(busy.threadId)!.status = "working";
+    w.threads.delete(gone.threadId);
     w.gh = () => ({ code: 0, stdout: JSON.stringify({ state: "OPEN" }) });
 
     w.clock += 30 * 60_000;
-    expect((await tick({ maxStarts: 0 })).findings).toEqual(["vanished pane " + gone.paneId + " is gone"]);
+    expect((await tick({ maxStarts: 0 })).findings).toEqual(["vanished thread " + gone.threadId + " is gone"]);
     w.clock += 4 * HOUR;
     await dutyTick(d);
     expect(d.store.lane("busy")!.lastActivityAt).toBe(w.clock);
@@ -243,7 +243,7 @@ describe("hourly loop", () => {
 
   test("failed lane starts are recorded, each uses a slot, and the run still reports what is waiting; with no lead nothing starts", async () => {
     const failing = setup({
-      exec: (inner) => async (cmd, argv) => (cmd === "herdr" && argv[0] === "tab" ? { code: 1, stdout: "", stderr: "server down" } : inner(cmd, argv)),
+      exec: (inner) => async (cmd, argv) => (cmd === "sessions" && argv[0] === "create" ? { code: 1, stdout: "", stderr: "server down" } : inner(cmd, argv)),
     });
     failing.add("one");
     failing.add("two");
@@ -251,8 +251,8 @@ describe("hourly loop", () => {
     const run = await failing.tick({ maxStarts: 2 });
     expect(run.started).toEqual([]);
     expect(run.findings).toEqual([
-      expect.stringContaining("start one failed: herdr tab create"),
-      expect.stringContaining("start three failed: herdr tab create"),
+      expect.stringContaining("start one failed: sessions create"),
+      expect.stringContaining("start three failed: sessions create"),
     ]);
     expect(run.held).toEqual(["1 item(s) waiting: 3 free of 3 lanes, max 2/run"]);
     expect(failing.d.store.item("one")).toMatchObject({ status: "open", attempts: 0, startFailures: 1 });
@@ -262,7 +262,7 @@ describe("hourly loop", () => {
     const headless = setup({ lead: false });
     headless.add("one");
     const quiet = await headless.tick();
-    expect(quiet.held).toEqual(["no lead pane registered"]);
+    expect(quiet.held).toEqual(["no lead thread registered"]);
     expect(quiet.started).toEqual([]);
     expect(headless.d.store.runs()).toHaveLength(1);
   });
@@ -321,7 +321,7 @@ describe("hardening", () => {
   test("a lane that opened but whose [START] could not reach the lead counts as started", async () => {
     const { d, add, tick } = setup({
       exec: (inner) => async (cmd, argv) =>
-        cmd === "herdr" && argv[0] === "agent" && argv[2] === "w1:p1" ? { code: 1, stdout: "", stderr: "lead pane hung" } : inner(cmd, argv),
+        cmd === "sessions" && argv[0] === "deliver" && argv[1] === "w1:p1" ? { code: 1, stdout: "", stderr: "lead thread hung" } : inner(cmd, argv),
     });
     add("solo");
     const run = await tick({ maxStarts: 1 });
@@ -339,7 +339,7 @@ describe("hardening", () => {
     let home = "";
     const { d, add, tick } = setup({
       exec: (inner) => async (cmd, argv) => {
-        if (cmd === "herdr" && argv[0] === "tab") {
+        if (cmd === "sessions" && argv[0] === "create") {
           writeFileSync(join(home, "loop", "lock"), JSON.stringify({ pid: process.ppid, at: 0, nonce: "usurper" }));
         }
         return inner(cmd, argv);

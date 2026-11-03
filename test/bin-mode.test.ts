@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const root = join(import.meta.dir, "..");
-const packages = [".", "skills/dori-mode/scripts"];
+const packages = ["."];
 
 // `bun link` makes each bin target executable. If git tracks the file as 100644, that leaves a mode change in the
 // checkout, and the next `install.sh` run (`git pull --ff-only`) aborts as soon as upstream touches the file.

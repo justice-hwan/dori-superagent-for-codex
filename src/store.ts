@@ -1,4 +1,5 @@
-import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, openSync, closeSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -6,9 +7,8 @@ export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
 
 export type Lane = {
   key: string;
-  paneId: string;
-  tabId: string;
-  brief: string;
+  threadId: string;
+    brief: string;
   cwd: string;
   status: LaneStatus;
   createdAt: number;
@@ -21,6 +21,7 @@ export type Lane = {
 export type Role = "lead" | "duty";
 
 export type QueuedMessage = { at: number; from: string; text: string };
+export type InboxBatch = { id: string; offset: number; messages: QueuedMessage[] };
 
 export type ReviewReceipt = {
   pr: string;
@@ -80,8 +81,8 @@ const checkedId = (id: string): string => {
 };
 
 export class Store {
-  constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori")) {
-    for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs"]) mkdirSync(join(root, d), { recursive: true });
+  constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori-codex")) {
+    for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "sessions"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
   }
 
   private readJson<T>(path: string): T | undefined {
@@ -90,15 +91,16 @@ export class Store {
 
   private writeJson(path: string, value: unknown): void {
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n");
+    writeFileSync(tmp, JSON.stringify(value, null, 2) + "\n", { mode: 0o600 });
     renameSync(tmp, path);
   }
 
   lane(key: string): Lane | undefined {
-    return this.readJson<Lane>(join(this.root, "lanes", `${key}.json`));
+    return this.readJson<Lane>(join(this.root, "lanes", `${checkedId(key)}.json`));
   }
 
   saveLane(lane: Lane): void {
+    checkedId(lane.key);
     this.writeJson(join(this.root, "lanes", `${lane.key}.json`), lane);
   }
 
@@ -110,41 +112,84 @@ export class Store {
       .sort((a, b) => a.createdAt - b.createdAt || a.key.localeCompare(b.key));
   }
 
-  laneByPane(paneId: string): Lane | undefined {
-    return this.lanes().find((l) => l.paneId === paneId && l.status !== "done");
+  laneByThread(threadId: string): Lane | undefined {
+    return this.lanes().find((l) => l.threadId === threadId && l.status !== "done");
   }
 
   roles(): Partial<Record<Role, string>> {
     return this.readJson(join(this.root, "roles.json")) ?? {};
   }
 
-  setRole(role: Role, paneId: string): void {
-    this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: paneId });
+  setRole(role: Role, threadId: string): void {
+    this.writeJson(join(this.root, "roles.json"), { ...this.roles(), [role]: threadId });
   }
 
   briefPath(key: string): string {
     return join(this.root, "briefs", `${key}.md`);
   }
 
-  private inboxPath(paneId: string): string {
-    return join(this.root, "inbox", `${paneId.replaceAll(":", "_")}.jsonl`);
+  private inboxPath(threadId: string): string {
+    if (!/^[a-zA-Z0-9:_-]+$/.test(threadId)) throw new Error("invalid thread id");
+    return join(this.root, "inbox", `${threadId.replaceAll(":", "_")}.jsonl`);
   }
 
-  enqueue(paneId: string, msg: QueuedMessage): void {
-    appendFileSync(this.inboxPath(paneId), JSON.stringify(msg) + "\n");
+  enqueue(threadId: string, msg: QueuedMessage): void {
+    appendFileSync(this.inboxPath(threadId), JSON.stringify(msg) + "\n", { mode: 0o600 });
   }
 
-  queued(paneId: string): QueuedMessage[] {
-    const p = this.inboxPath(paneId);
+  queued(threadId: string): QueuedMessage[] {
+    const p = this.inboxPath(threadId);
     if (!existsSync(p)) return [];
-    return readFileSync(p, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l) as QueuedMessage);
+    const cursor = this.readJson<number>(p + ".cursor") ?? 0;
+    return readFileSync(p, "utf8").split("\n").filter(Boolean).slice(cursor).map((l) => JSON.parse(l) as QueuedMessage);
   }
 
-  clearInbox(paneId: string): void {
-    writeFileSync(this.inboxPath(paneId), "");
+  clearInbox(threadId: string): void {
+    this.ackInbox(threadId, this.queued(threadId).length);
   }
 
-  inboxPanes(): string[] {
+  inboxBatch(threadId: string): InboxBatch | undefined {
+    const p = this.inboxPath(threadId);
+    const saved = this.readJson<InboxBatch>(p + ".batch");
+    if (saved) return saved;
+    const messages = this.queued(threadId);
+    if (!messages.length) return undefined;
+    const batch = { id: randomUUID(), offset: this.readJson<number>(p + ".cursor") ?? 0, messages };
+    this.writeJson(p + ".batch", batch);
+    return batch;
+  }
+
+  /** Acknowledge only the submitted batch. Concurrent appends never get truncated. */
+  ackInbox(threadId: string, count: number): void {
+    const p = this.inboxPath(threadId) + ".cursor";
+    const cursor = this.readJson<number>(p) ?? 0;
+    const batchPath = this.inboxPath(threadId) + ".batch";
+    const batch = this.readJson<InboxBatch>(batchPath);
+    this.writeJson(p, Math.max(cursor, (batch?.offset ?? cursor) + count));
+    if (batch) unlinkSync(batchPath);
+  }
+
+  /** Serialize submissions across CLI processes and duty ticks, with dead-owner recovery. */
+  lockInbox(threadId: string): (() => void) | undefined {
+    const path = this.inboxPath(threadId) + ".lock";
+    const token = JSON.stringify({ pid: process.pid, nonce: randomUUID() });
+    try {
+      const fd = openSync(path, "wx", 0o600);
+      try { writeFileSync(fd, token); } finally { closeSync(fd); }
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      try {
+        const old = JSON.parse(readFileSync(path, "utf8")) as { pid: number };
+        try { process.kill(old.pid, 0); return undefined; }
+        catch (err) { if ((err as NodeJS.ErrnoException).code !== "ESRCH") return undefined; }
+        unlinkSync(path);
+        return this.lockInbox(threadId);
+      } catch { return undefined; }
+    }
+    return () => { if (existsSync(path) && readFileSync(path, "utf8") === token) unlinkSync(path); };
+  }
+
+  inboxThreads(): string[] {
     return readdirSync(join(this.root, "inbox"))
       .filter((f) => f.endsWith(".jsonl"))
       .map((f) => f.slice(0, -".jsonl".length).replaceAll("_", ":"))

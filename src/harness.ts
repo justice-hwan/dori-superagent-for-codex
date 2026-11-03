@@ -2,9 +2,10 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { join, resolve } from "node:path";
-import { Herdr, HerdrError, shq, spawnExec, type AgentStatus, type Exec } from "./herdr.ts";
+import { shq, spawnExec, type Exec } from "./process.ts";
+import { Sessions, type SessionRuntime, type AgentStatus } from "./sessions.ts";
 import { KEY_RE, Store, type HostLoad, type Lane, type Role } from "./store.ts";
-import { Telemetry, type MergeOutcome, type Usage } from "./telemetry.ts";
+type MergeOutcome = "merged" | "no_receipt" | "review_block" | "no_checks" | "checks_red" | "checks_all_skipped";
 
 export { KEY_RE };
 
@@ -14,26 +15,22 @@ const CLI = resolve(import.meta.dir, "cli.ts");
 
 export type Deps = {
   readonly store: Store;
-  readonly herdr: Herdr;
+  readonly sessions: SessionRuntime;
   readonly exec: Exec;
   readonly now: () => number;
-  readonly agentCmd: string;
   readonly doriCmd: string;
   readonly host: () => HostLoad;
-  readonly usage: Usage;
 };
 
 export const defaultDeps = (): Deps => {
   const store = new Store();
   return {
     store,
-    herdr: new Herdr(),
+    sessions: new Sessions(store.root),
     exec: spawnExec,
     now: Date.now,
-    agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
     doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
-    usage: new Telemetry(store.root),
   };
 };
 
@@ -65,49 +62,54 @@ export function memFreePct(
 const prompt = (name: string, vars: Record<string, string>): string =>
   readFileSync(join(PROMPTS, name), "utf8").replace(/\{\{(\w+)\}\}/g, (_, k: string) => vars[k] ?? `{{${k}}}`);
 
-// ---------- pane messaging ----------
+// ---------- thread messaging ----------
 
 export function resolveTarget(d: Deps, target: string): string {
-  if (/^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/.test(target)) return target;
+  if (d.sessions.known(target)) return target;
   const roles = d.store.roles();
   if (target === "lead" || target === "duty") {
-    const pane = roles[target];
-    if (!pane) throw new Refusal(`no ${target} pane registered (dori role ${target} <pane>)`);
-    return pane;
+    const thread = roles[target];
+    if (!thread) throw new Refusal(`no ${target} thread registered (dori role ${target} <thread>)`);
+    return thread;
   }
   const lane = d.store.lane(target);
-  if (lane && lane.status !== "done") return lane.paneId;
-  throw new Refusal(`unknown target ${target}: not a pane id, role or open lane`);
+  if (lane && lane.status !== "done") return lane.threadId;
+  throw new Refusal(`unknown target ${target}: not a thread id, role or open lane`);
 }
 
-const READY_TO_READ: readonly AgentStatus[] = ["idle", "done", "shell"];
+const READY_TO_READ: readonly AgentStatus[] = ["idle", "done"];
 
-/** Delivers now when the pane can read; otherwise queues it for the duty loop (busy agents are never interrupted). */
+/** Delivers now when the thread can read; otherwise queues it for the duty loop (busy agents are never interrupted). */
 export async function send(d: Deps, target: string, text: string, from: string): Promise<"DELIVERED" | "QUEUED"> {
-  const paneId = resolveTarget(d, target);
-  d.store.enqueue(paneId, { at: d.now(), from, text });
-  return (await flushInbox(d, paneId)) ? "DELIVERED" : "QUEUED";
+  const threadId = resolveTarget(d, target);
+  d.store.enqueue(threadId, { at: d.now(), from, text });
+  return (await flushInbox(d, threadId)) ? "DELIVERED" : "QUEUED";
 }
 
-export async function flushInbox(d: Deps, paneId: string): Promise<boolean> {
-  const queued = d.store.queued(paneId);
-  if (queued.length === 0) return true;
-  const status = await d.herdr.status(paneId);
-  if (status === "gone") throw new Refusal(`pane ${paneId} is gone; ${queued.length} message(s) kept in its inbox`);
+export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
+  const unlock = d.store.lockInbox(threadId);
+  if (!unlock) return false;
+  try {
+  if (d.store.queued(threadId).length === 0) return true;
+  const status = await d.sessions.status(threadId);
+  if (status === "gone") throw new Refusal(`thread ${threadId} is gone; queued message(s) kept in its inbox`);
   if (!READY_TO_READ.includes(status)) return false;
+  const batch = d.store.inboxBatch(threadId)!;
+  const queued = batch.messages;
   const body =
     queued.length === 1
       ? queued[0]!.text
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
-  await d.herdr.deliver(paneId, body, status);
-  d.store.clearInbox(paneId);
+  await d.sessions.deliver(threadId, body, batch.id);
+  d.store.ackInbox(threadId, queued.length);
   return true;
+  } finally { unlock(); }
 }
 
 export async function tellLead(d: Deps, text: string, from: string): Promise<void> {
   if (!d.store.roles().lead) {
-    process.stderr.write(`dori: no lead pane registered; message kept only in the lane log\n`);
+    process.stderr.write(`dori: no lead thread registered; message kept only in the lane log\n`);
     return;
   }
   await send(d, "lead", text, from);
@@ -119,34 +121,36 @@ export async function startLane(
   d: Deps,
   key: string,
   briefFile: string,
-  opts: { cwd?: string; workspace?: string } = {},
+  opts: { cwd?: string } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const existing = d.store.lane(key);
-  if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.paneId}`);
+  if (existing && existing.status !== "done" && existing.status !== "lost") throw new Refusal(`lane ${key} is already open in ${existing.threadId}`);
   const cwd = resolve(opts.cwd ?? process.cwd());
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
   await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
 
-  const workspace = opts.workspace ?? process.env["HERDR_WORKSPACE_ID"];
-  const env = { DORI_LANE: key, DORI_HOME: d.store.root };
-  const pane = workspace
-    ? await d.herdr.createTab(key, cwd, workspace, env)
-    : await d.herdr.createTab(key, cwd, (await d.herdr.createWorkspace("dori", cwd)).workspaceId, env);
+  const threadId = await d.sessions.create(key, cwd, footer);
   const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
-  await d.herdr.run(pane.paneId, `${d.agentCmd} ${shq(kickoff)}`);
 
   const now = d.now();
   const lane: Lane = {
-    key, paneId: pane.paneId, tabId: pane.tabId, brief: briefPath, cwd,
+    key, threadId, brief: briefPath, cwd,
     status: "working", createdAt: now, lastActivityAt: now, nudges: 0,
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
-  await tellLead(d, `[START ${key}] lane opened in ${pane.paneId}`, key);
-  const open = d.store.lanes().filter((l) => l.status === "working" || l.status === "waiting").length;
-  d.usage.record({ name: "dori.lane_started", open_lanes: Math.min(open, 1000) });
+  try {
+    await d.sessions.deliver(threadId, kickoff);
+  } catch (e) {
+    lane.status = "lost";
+    lane.log.push({ at: d.now(), kind: "lost", text: "Codex turn failed to start" });
+    d.store.saveLane(lane);
+    await d.sessions.close(threadId).catch(() => {});
+    throw e;
+  }
+  await tellLead(d, `[START ${key}] lane opened in ${threadId}`, key);
   return lane;
 }
 
@@ -179,20 +183,15 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
   lane.log.push({ at: now, kind: "ready", text });
   d.store.saveLane(lane);
   await tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key);
-  d.usage.record({
-    name: "dori.lane_ready",
-    evidence_count: Math.min(evidence.length, 100),
-    lane_minutes: Math.min(Math.floor((now - lane.createdAt) / 60_000), 10_080),
-  });
 }
 
 export async function done(d: Deps, key: string): Promise<void> {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
-  const st = await d.herdr.status(lane.paneId);
-  if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
-  if (st !== "gone") await d.herdr.close(lane.paneId);
+  const st = await d.sessions.status(lane.threadId);
+  if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} thread is ${st}; let it finish first`);
+  if (st !== "gone") await d.sessions.close(lane.threadId);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
   d.store.saveLane(lane);
@@ -200,37 +199,37 @@ export async function done(d: Deps, key: string): Promise<void> {
 
 // ---------- duty loop ----------
 
-export type DutyEvent = { lane?: string; pane?: string; action: string; detail?: string };
+export type DutyEvent = { lane?: string; thread?: string; action: string; detail?: string };
 
-/** A short one-line reason. A HerdrError message carries the whole argv (the queued text), so use herdr's own output. */
+/** A short one-line reason. A RPC error message carries the whole argv (the queued text), so use Codex's own output. */
 function failureDetail(e: unknown): string {
-  const raw = e instanceof HerdrError ? e.result.stderr || e.result.stdout : e instanceof Error ? e.message : String(e);
+  const raw = e instanceof Error ? e.message : String(e);
   const first = raw.trim().split("\n")[0] ?? "";
   return first.length > 200 ? `${first.slice(0, 200)}...` : first;
 }
 
-/** One proactive pass: flush inboxes of panes that became idle, nudge silent lanes, escalate, detect lost panes. */
+/** One proactive pass: flush inboxes of threads that became idle, nudge silent lanes, escalate, detect lost threads. */
 export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
   const events: DutyEvent[] = [];
-  for (const paneId of d.store.inboxPanes()) {
+  for (const threadId of d.store.inboxThreads()) {
     try {
-      if (await flushInbox(d, paneId)) events.push({ pane: paneId, action: "flushed" });
+      if (await flushInbox(d, threadId)) events.push({ thread: threadId, action: "flushed" });
     } catch (e) {
-      // One pane's failed delivery must never kill the loop for every other pane and lane.
-      if (e instanceof Refusal) events.push({ pane: paneId, action: "inbox-target-gone" });
-      else events.push({ pane: paneId, action: "flush-failed", detail: failureDetail(e) });
+      // One thread's failed delivery must never kill the loop for every other thread and lane.
+      if (e instanceof Refusal) events.push({ thread: threadId, action: "inbox-target-gone" });
+      else events.push({ thread: threadId, action: "flush-failed", detail: failureDetail(e) });
     }
   }
   for (const lane of d.store.lanes()) {
     if (lane.status !== "working" && lane.status !== "waiting") continue;
     try {
-      const st = await d.herdr.status(lane.paneId);
+      const st = await d.sessions.status(lane.threadId);
       const now = d.now();
       if (st === "gone") {
         lane.status = "lost";
-        lane.log.push({ at: now, kind: "lost", text: "pane disappeared without READY" });
+        lane.log.push({ at: now, kind: "lost", text: "thread disappeared without READY" });
         d.store.saveLane(lane);
-        await tellLead(d, `[LOST ${lane.key}] pane ${lane.paneId} closed without a final answer`, "duty");
+        await tellLead(d, `[LOST ${lane.key}] thread ${lane.threadId} closed without a final answer`, "duty");
         events.push({ lane: lane.key, action: "lost" });
         continue;
       }
@@ -258,15 +257,6 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       events.push({ lane: lane.key, action: "lane-failed", detail: failureDetail(e) });
     }
   }
-  const count = (pred: (a: string) => boolean) => events.filter((e) => pred(e.action)).length;
-  d.usage.touch();
-  d.usage.duty({
-    ticks: 1,
-    flushed: count((a) => a === "flushed"),
-    nudges: count((a) => a.startsWith("nudge-")),
-    escalations: count((a) => a === "escalated"),
-    lost: count((a) => a === "lost"),
-  });
   return events;
 }
 
@@ -296,15 +286,12 @@ export async function review(d: Deps, prId: string, model?: string): Promise<{ v
   const pr = parsePr(prId);
   const sha = await headSha(d, pr);
   const text = prompt("review.md", { pr: pr.id, repo: pr.repo, number: String(pr.number), sha });
-  const argv = ["-p", "--no-session", ...(model ? ["--model", model] : []), text];
-  const res = await d.exec(d.agentCmd, argv);
-  if (res.code !== 0) throw new Error(`reviewer exited ${res.code}: ${res.stderr.trim()}`);
-  const verdicts = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
+  const output = await d.sessions.review(text, process.cwd(), model);
+  const verdicts = [...output.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
   if (!last) throw new Error("reviewer printed no VERDICT line; no receipt written");
   const verdict = last[1] as "CLEAR" | "BLOCK";
-  d.store.saveReceipt({ pr: pr.id, sha, verdict, model: model ?? "default", at: d.now(), summary: res.stdout.trim().slice(-4000) });
-  d.usage.record({ name: "dori.review_completed", verdict });
+  d.store.saveReceipt({ pr: pr.id, sha, verdict, model: model ?? "default", at: d.now(), summary: output.trim().slice(-4000) });
   return { verdict, sha };
 }
 
@@ -316,12 +303,10 @@ export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean 
   const sha = await headSha(d, pr);
   const refused = await gateRefusal(d, pr, sha);
   if (refused) {
-    if (!opts.dryRun) d.usage.record({ name: "dori.merge_decided", outcome: refused[0] });
     throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
   }
   if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
   await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, "--squash", "--match-head-commit", sha]);
-  d.usage.record({ name: "dori.merge_decided", outcome: "merged" });
   return `MERGED ${pr.id} head=${sha}`;
 }
 

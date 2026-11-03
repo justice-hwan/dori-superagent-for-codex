@@ -2,87 +2,56 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
-import { Herdr, type AgentStatus, type Exec } from "../src/herdr.ts";
+import type { AgentStatus, SessionRuntime } from "../src/sessions.ts";
+import type { Exec } from "../src/process.ts";
 import { Store, type HostLoad } from "../src/store.ts";
-import type { DutyCounts, TelemetryEvent, Usage } from "../src/telemetry.ts";
 
-type Pane = { status: AgentStatus; received: string[]; ran: string[] };
-
+type Thread = { status: AgentStatus; received: string[] };
 export class World {
-  panes = new Map<string, Pane>();
+  threads = new Map<string, Thread>();
   calls: { cmd: string; argv: readonly string[] }[] = [];
   clock = 1_000_000;
   host: HostLoad = { load1: 1, cores: 8, memFreePct: 50 };
   next = 1;
-  /** pane id -> herdr error text returned by `agent prompt` (exit 1) */
   promptFails = new Map<string, string>();
-  /** number of upcoming `pane send-keys` calls that fail (exit 1) */
-  keyFails = 0;
   gh: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 1, stdout: "" });
-  usage: TelemetryEvent[] = [];
-  dutyCounts: DutyCounts[] = [];
-  touches = 0;
-  recorder: Usage = {
-    touch: () => { this.touches++; },
-    record: (e) => { this.usage.push(e); },
-    duty: (c) => { this.dutyCounts.push(c); },
-    flush: async () => {},
-  };
   reviewer: (argv: readonly string[]) => { code: number; stdout: string } = () => ({ code: 0, stdout: "VERDICT: CLEAR" });
-
-  addPane(id: string, status: AgentStatus = "idle"): Pane {
-    const p = { status, received: [], ran: [] };
-    this.panes.set(id, p);
-    return p;
+  addThread(id: string, status: AgentStatus = "idle"): Thread {
+    const t = { status, received: [] as string[] }; this.threads.set(id, t); return t;
   }
-
   exec: Exec = async (cmd, argv) => {
     this.calls.push({ cmd, argv });
     if (cmd === "gh") return { ...this.gh(argv), stderr: "" };
-    if (cmd !== "herdr") return { ...this.reviewer(argv), stderr: "" };
-    const ok = (result: unknown) => ({ code: 0, stdout: JSON.stringify({ result }), stderr: "" });
-    const [group, verb, id] = argv;
-    if ((group === "tab" || group === "workspace") && verb === "create") {
-      const pane = `w1:p${++this.next}`;
-      this.addPane(pane, "shell");
-      return ok({ root_pane: { pane_id: pane, tab_id: `w1:t${this.next}`, workspace_id: "w1" } });
-    }
-    if (group === "pane" && verb === "split") {
-      const pane = `w1:p${++this.next}`;
-      this.addPane(pane, "shell");
-      return ok({ pane: { pane_id: pane, tab_id: "w1:t1", workspace_id: "w1" } });
-    }
-    const pane = id ? this.panes.get(id) : undefined;
-    if (!pane) return { code: 1, stdout: "", stderr: `pane_not_found ${id}` };
-    if (group === "pane" && verb === "get") {
-      return ok({ pane: { pane_id: id, agent: pane.status === "shell" ? null : "pi", agent_status: pane.status } });
-    }
-    if (group === "pane" && verb === "run") { pane.ran.push(String(argv[3])); return ok({}); }
-    if (group === "pane" && verb === "send-text") { pane.received.push(String(argv[3])); return ok({}); }
-    if (group === "pane" && verb === "send-keys") {
-      if (this.keyFails > 0) { this.keyFails--; return { code: 1, stdout: "", stderr: "key press failed" }; }
-      return ok({});
-    }
-    if (group === "agent" && verb === "prompt") {
+    const ok = (value: unknown) => ({ code: 0, stdout: JSON.stringify(value), stderr: "" });
+    const [method, id, text] = argv;
+    if (method === "create") { const id = `w1:p${++this.next}`; this.addThread(id); return ok(id); }
+    const t = this.threads.get(id!);
+    if (method === "status") return ok(t?.status ?? "gone");
+    if (!t) return { code: 1, stdout: "", stderr: "thread not found" };
+    if (method === "deliver") {
       const fail = this.promptFails.get(id!);
       if (fail) return { code: 1, stdout: "", stderr: fail };
-      pane.received.push(String(argv[3]));
-      return ok({});
+      t.received.push(text!); return ok(null);
     }
-    if (group === "pane" && verb === "close") { this.panes.delete(id!); return ok({}); }
-    return { code: 1, stdout: "", stderr: `unhandled ${argv.join(" ")}` };
+    if (method === "close") { this.threads.delete(id!); return ok(null); }
+    if (method === "read") return ok(t.received.at(-1) ?? "");
+    return { code: 1, stdout: "", stderr: `unhandled ${method}` };
   };
-
   deps(): Deps {
-    return {
-      store: new Store(mkdtempSync(join(tmpdir(), "dori-test-"))),
-      herdr: new Herdr(this.exec, undefined),
-      exec: this.exec,
-      now: () => this.clock,
-      agentCmd: "omo",
-      doriCmd: "dori",
-      host: () => this.host,
-      usage: this.recorder,
+    const call = async <T>(method: string, args: string[]): Promise<T> => {
+      const r = await this.exec("sessions", [method, ...args]);
+      if (r.code) throw new Error(`sessions ${method}: ${r.stderr}`);
+      return JSON.parse(r.stdout) as T;
     };
+    const sessions: SessionRuntime = {
+      known: (id) => this.threads.has(id),
+      create: (name, cwd, instructions) => call("create", [name, cwd, instructions]),
+      status: (id) => call("status", [id]),
+      deliver: async (id, text) => { await call("deliver", [id, text]); },
+      read: (id) => call("read", [id]),
+      close: async (id) => { await call("close", [id]); },
+      review: async (text, _cwd, model) => { const r = this.reviewer([text, model ?? "default"]); if (r.code) throw new Error("review failed"); return r.stdout; },
+    };
+    return { store: new Store(mkdtempSync(join(tmpdir(), "dori-test-"))), sessions, exec: this.exec, now: () => this.clock, doriCmd: "dori", host: () => this.host };
   }
 }
