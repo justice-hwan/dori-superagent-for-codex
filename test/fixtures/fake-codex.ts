@@ -39,6 +39,13 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     if (text === "DROP") { process.exit(0); }
     if (text === "REFUSE") { fail("turn refused"); return; }
     threads.set(p.threadId, { turn, text });
+    if (text === "SLOW_START") {
+      setTimeout(() => {
+        ok({ turn: { id: turn, status: "inProgress" } });
+        event("turn/started", { threadId: p.threadId, turn: { id: turn, status: "inProgress" } });
+        event("turn/completed", { threadId: p.threadId, turn: { id: turn, status: "completed" } });
+      }, 12_000); return;
+    }
     ok({ turn: { id: turn, status: "inProgress" } });
     event("turn/started", { threadId: p.threadId, turn: { id: turn, status: "inProgress" } });
     if (text === "APPROVE") {
@@ -47,11 +54,11 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     }
     if (text === "HOLD") return;
     setTimeout(() => {
-      const output = text === "FAIL" ? "partial result" : text;
+      const output = text === "FAIL" ? "partial result" : text === "SLOW_REVIEW" ? "VERDICT: CLEAR" : text;
       event("item/agentMessage/delta", { threadId: p.threadId, delta: output });
       event("item/completed", { threadId: p.threadId, item: { type: "agentMessage", text: output, phase: "final_answer" } });
       event("turn/completed", { threadId: p.threadId, turn: { id: turn, status: text === "FAIL" ? "failed" : "completed" } });
-    }, 20);
+    }, text === "SLOW_REVIEW" ? 12_000 : 20);
     return;
   }
   fail("unsupported method");

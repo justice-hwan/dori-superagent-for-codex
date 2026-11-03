@@ -37,3 +37,23 @@ test("Unix-socket CLI: up, send, read, approval response, lane READY, close and 
     rmSync(home, { recursive: true, force: true });
   }
 }, 20_000);
+
+test("delayed review and submission survive server and client idle limits", async () => {
+  const home = mkdtempSync(join(tmpdir(), "dori-slow-review-test-"));
+  const env = { ...process.env, DORI_HOME: home, DORI_CODEX_BIN: join(import.meta.dir, "fixtures/fake-codex.ts") };
+  const cliRun = async (...args: string[]) => {
+    const p = Bun.spawn([process.execPath, cli, ...args], { env, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    if (code) throw new Error(err); return out;
+  };
+  try {
+    await cliRun("up", "--cwd", home);
+    const script = `import { Sessions } from ${JSON.stringify(join(import.meta.dir, "../src/sessions.ts"))}; const s = new Sessions(${JSON.stringify(home)}); const id = await s.create("slow", ${JSON.stringify(home)}, ""); const [review] = await Promise.all([s.review("SLOW_REVIEW", ${JSON.stringify(home)}), s.deliver(id, "SLOW_START", "slow-batch")]); console.log(review);`;
+    const p = Bun.spawn([process.execPath, "-e", script], { env: { ...env, BUN_CONFIG_HTTP_IDLE_TIMEOUT: "1" }, stdout: "pipe", stderr: "pipe" });
+    const [out, err, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]);
+    expect({ code, err }).toEqual({ code: 0, err: "" }); expect(out.trim()).toBe("VERDICT: CLEAR");
+  } finally {
+    if (existsSync(join(home, "runtime.lock"))) await cliRun("down").catch(() => {});
+    rmSync(home, { recursive: true, force: true });
+  }
+}, 25_000);

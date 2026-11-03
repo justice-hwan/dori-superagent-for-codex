@@ -14,6 +14,8 @@ export class Runtime {
   private resuming = new Map<string, Promise<void>>();
   private revisions = new Map<string, number>();
   private busy = new Set<string>();
+  private closing = new Set<string>();
+  private interrupting = new Set<string>();
   private submitting = new Set<string>();
   private finished = new Set<string>();
   stopping = false;
@@ -108,11 +110,12 @@ export class Runtime {
     if (!text.trim()) throw new Error("message must not be empty");
     const s = this.owned(id);
     if (deliveryId && s.lastDeliveryId === deliveryId) return;
+    if (this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread is closing or being interrupted; message not submitted");
     if (this.busy.has(id)) throw new Error("thread delivery already in progress");
     this.busy.add(id);
     try {
       await this.resume(s);
-      if (s.status !== "idle" && s.status !== "done") throw new Error(`thread is ${s.status}; message not submitted`);
+      if (s.status !== "idle" && s.status !== "done" && s.status !== "failed") throw new Error(`thread is ${s.status}; message not submitted`);
       s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.everStarted = true; s.pendingDeliveryId = deliveryId;
       // Write-ahead uncertainty closes the crash window before the external submission.
       s.uncertainDelivery = true; this.save(s);
@@ -162,7 +165,7 @@ export class Runtime {
       const turn = p.turn;
       if (typeof turn?.id === "string") this.finished.add(turn.id);
       s.lastTurnStatus = turn?.status;
-      s.status = s.uncertainDelivery ? "unknown" : turn?.status === "completed" ? "done" : turn?.status === "interrupted" ? "idle" : "unknown";
+      s.status = s.uncertainDelivery ? "unknown" : turn?.status === "completed" ? "done" : turn?.status === "interrupted" ? "idle" : turn?.status === "failed" ? "failed" : "unknown";
       s.turnId = undefined;
       for (const [id, request] of this.requests) if (request.params.threadId === s.id) this.requests.delete(id);
       this.saveRequests();
@@ -192,15 +195,39 @@ export class Runtime {
 
   async interrupt(id: string): Promise<void> {
     const s = this.owned(id);
-    await this.resume(s);
-    if (s.turnId) await this.codex.request("turn/interrupt", { threadId: id, turnId: s.turnId });
+    if (this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread shutdown operation already in progress");
+    this.interrupting.add(id);
+    try {
+      const deadline = Date.now() + 25_000;
+      while (this.busy.has(id)) {
+        if (Date.now() >= deadline) throw new Error("submission still pending; interruption unconfirmed");
+        await Bun.sleep(10);
+      }
+      await this.resume(s);
+      const turnId = s.turnId;
+      if (!turnId) {
+        if (s.uncertainDelivery || ["working", "blocked", "unknown"].includes(s.status)) throw new Error("active turn identity is unresolved; interruption unconfirmed");
+        return;
+      }
+      try { await this.codex.request("turn/interrupt", { threadId: id, turnId }); }
+      catch (e) { if (!this.finished.has(turnId)) throw e; }
+      const until = Date.now() + 5000;
+      while (!this.finished.has(turnId) && s.turnId === turnId) {
+        if (Date.now() >= until) throw new Error("interrupt acknowledged but completion is unconfirmed");
+        await Bun.sleep(10);
+      }
+    } finally { this.interrupting.delete(id); }
   }
 
   async close(id: string): Promise<void> {
     const s = this.owned(id);
-    if (["working", "blocked", "unknown"].includes(await this.status(id))) throw new Error("finish or interrupt the turn before closing");
-    await this.codex.request("thread/archive", { threadId: id });
-    s.closed = true; s.status = "gone"; this.save(s);
+    if (this.busy.has(id) || this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread operation already in progress; finish it before closing");
+    this.closing.add(id);
+    try {
+      if (["working", "blocked", "unknown"].includes(await this.status(id))) throw new Error("finish or interrupt the turn before closing");
+      await this.codex.request("thread/archive", { threadId: id });
+      s.closed = true; s.status = "gone"; this.save(s);
+    } finally { this.closing.delete(id); }
   }
 
   async review(text: string, cwd: string, model?: string): Promise<string> {
@@ -212,12 +239,12 @@ export class Runtime {
         const s = this.owned(id);
         if (s.status === "done") return s.output;
         if (s.status === "blocked") throw new Error(`review needs a response: dori-codex requests (thread ${id})`);
-        if (s.status === "unknown") throw new Error("review failed or disconnected; no receipt written");
+        if (s.status === "unknown" || s.status === "failed") throw new Error("review failed or disconnected; no receipt written");
         await Bun.sleep(100);
       }
       await this.interrupt(id); throw new Error("review timed out; no receipt written");
     } finally {
-      if (this.sessions.get(id)?.status === "done" || this.sessions.get(id)?.status === "idle") await this.close(id);
+      if (["done", "idle", "failed"].includes(this.sessions.get(id)?.status ?? "")) await this.close(id);
     }
   }
 
@@ -263,10 +290,11 @@ export async function serve(home: string, onTick: () => Promise<void> = async ()
     runtime = new Runtime(home);
     await runtime.codex.connect();
     if (!lease.holds()) throw new Error("runtime ownership changed during startup");
-    server = Bun.serve({ unix: path, maxRequestBodySize: 1_048_576, async fetch(req) {
+    server = Bun.serve({ unix: path, maxRequestBodySize: 1_048_576, async fetch(req, server) {
       try {
         if (req.method !== "POST" || new URL(req.url).pathname !== "/rpc") return new Response("not found", { status: 404 });
         const { method, args: a = {} } = await req.json() as { method: string; args: any };
+        server.timeout(req, 0); // RPC operations and the client own explicit deadlines, including slow submissions.
         if (runtime!.stopping && method !== "health" && method !== "shutdown") throw new Error("runtime is stopping");
         let value: unknown;
         switch (method) {

@@ -16,6 +16,7 @@ export type Lane = {
   lastActivityAt: number;
   nudges: number;
   kickoffPending?: boolean;
+  lastInstructionBatch?: string;
   final?: { text: string; evidence: string[]; at: number };
   log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
 };
@@ -113,16 +114,21 @@ export class Store {
     return acquireFileLease(join(this.root, "lanes", `${key}.allocation.lock`))?.release;
   }
 
+  lockLaneMutation(key: string): (() => void) | undefined {
+    checkedId(key);
+    return acquireFileLease(join(this.root, "lanes", `${key}.mutation.lock`))?.release;
+  }
+
   editLane(key: string, edit: (lane: Lane) => void | false): Lane {
     checkedId(key);
-    const lease = acquireFileLease(join(this.root, "lanes", `${key}.mutation.lock`));
-    if (!lease) throw new Error(`lane ${key} update is busy; retry after the current update`);
+    const unlock = this.lockLaneMutation(key);
+    if (!unlock) throw new Error(`lane ${key} update is busy; retry after the current update`);
     try {
       const lane = this.lane(key);
       if (!lane) throw new Error(`no lane ${key}`);
       if (edit(lane) !== false) this.saveLane(lane);
       return lane;
-    } finally { lease.release(); }
+    } finally { unlock(); }
   }
 
   lanes(): Lane[] {

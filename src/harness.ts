@@ -79,12 +79,22 @@ export function resolveTarget(d: Deps, target: string): string {
   throw new Refusal(`unknown target ${target}: not a thread id, role or open lane`);
 }
 
-const READY_TO_READ: readonly AgentStatus[] = ["idle", "done"];
+const READY_TO_READ: readonly AgentStatus[] = ["idle", "done", "failed"];
 
 /** Delivers now when the thread can read; otherwise queues it for the duty loop (busy agents are never interrupted). */
 export async function send(d: Deps, target: string, text: string, from: string): Promise<"DELIVERED" | "QUEUED"> {
+  if (!text.trim()) throw new Refusal("message must not be empty");
   const threadId = resolveTarget(d, target);
-  d.store.enqueue(threadId, { at: d.now(), from, text });
+  const lane = d.store.laneByThread(threadId);
+  const enqueue = () => d.store.enqueue(threadId, { at: d.now(), from, text });
+  if (lane) {
+    // Closure holds this same lease across status/archive, so new instructions
+    // are either durably admitted before it or refused without being queued.
+    d.store.editLane(lane.key, (current) => {
+      if (current.threadId !== threadId || current.status === "done" || current.status === "lost") throw new Refusal("lane changed before message admission; refresh it");
+      enqueue(); return false;
+    });
+  } else enqueue();
   return (await flushInbox(d, threadId)) ? "DELIVERED" : "QUEUED";
 }
 
@@ -96,13 +106,31 @@ export async function flushInbox(d: Deps, threadId: string): Promise<boolean> {
   const status = await d.sessions.status(threadId);
   if (status === "gone") throw new Refusal(`thread ${threadId} is gone; queued message(s) kept in its inbox`);
   if (!READY_TO_READ.includes(status)) return false;
-  const batch = d.store.inboxBatch(threadId)!;
+  let batch = d.store.inboxBatch(threadId)!;
+  while (batch.messages.every((m) => !m.text.trim())) {
+    d.store.ackInbox(threadId, batch.messages.length);
+    if (d.store.queued(threadId).length === 0) return true;
+    batch = d.store.inboxBatch(threadId)!;
+  }
   const queued = batch.messages;
   const body =
     queued.length === 1
       ? queued[0]!.text
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
+  const targetLane = d.store.laneByThread(threadId);
+  if (targetLane && queued.some((m) => m.from !== "duty")) {
+    d.store.editLane(targetLane.key, (current) => {
+      // Save before submission. A crash before inbox acknowledgement may replay
+      // the same accepted batch after its turn has already produced fresh READY.
+      if (current.lastInstructionBatch === batch.id) return false;
+      current.lastInstructionBatch = batch.id;
+      if (current.status === "ready") {
+        current.status = "working"; delete current.final;
+        current.log.push({ at: d.now(), kind: "report", text: "new instruction supersedes prior READY evidence" });
+      }
+    });
+  }
   await d.sessions.deliver(threadId, body, batch.id);
   const lane = d.store.laneByThread(threadId);
   if (lane?.kickoffPending) {
@@ -195,16 +223,23 @@ export async function ready(d: Deps, key: string, text: string, evidence: readon
 }
 
 export async function done(d: Deps, key: string): Promise<void> {
+  const unlockLane = d.store.lockLaneMutation(key);
+  if (!unlockLane) throw new Refusal(`lane ${key} update is busy; retry after the current update`);
+  let unlockInbox: (() => void) | undefined;
+  try {
   const lane = d.store.lane(key);
   if (!lane) throw new Refusal(`no lane ${key}`);
   if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+  unlockInbox = d.store.lockInbox(lane.threadId);
+  if (!unlockInbox) throw new Refusal(`lane ${key} delivery is busy; finish it before closing`);
+  if (d.store.queued(lane.threadId).length) throw new Refusal(`lane ${key} has queued messages; deliver them before closing`);
   const st = await d.sessions.status(lane.threadId);
-  if (st === "working" || st === "blocked") throw new Refusal(`lane ${key} thread is ${st}; let it finish first`);
+  if (st === "working" || st === "blocked" || st === "failed") throw new Refusal(`lane ${key} thread is ${st}; let it finish or recover first`);
   if (st !== "gone") await d.sessions.close(lane.threadId);
-  d.store.editLane(key, (current) => {
-    current.status = "done";
-    current.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
-  });
+  lane.status = "done";
+  lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
+  d.store.saveLane(lane);
+  } finally { unlockInbox?.(); unlockLane(); }
 }
 
 // ---------- duty loop ----------
@@ -238,7 +273,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     try {
       const st = await d.sessions.status(observed.threadId);
       const now = d.now();
-      let action: "lost" | "nudge" | "escalate" | undefined;
+      let action: "lost" | "failed" | "nudge" | "escalate" | undefined;
       let idleMin = 0;
       const lane = d.store.editLane(observed.key, (current) => {
         if (current.threadId !== observed.threadId || (current.status !== "working" && current.status !== "waiting")) return false;
@@ -248,6 +283,12 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
           action = "lost"; return;
         }
         if (st === "working") { current.lastActivityAt = now; return; }
+        if (st === "failed") {
+          if (current.status === "waiting") return false;
+          current.status = "waiting";
+          current.log.push({ at: now, kind: "report", text: "Codex turn failed; waiting for recovery instructions" });
+          action = "failed"; return;
+        }
         if (current.status === "waiting" || st === "blocked" || st === "unknown") return false;
         idleMin = (now - current.lastActivityAt) / 60_000;
         const due = NUDGE_MINUTES[current.nudges];
@@ -259,6 +300,9 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       if (action === "lost") {
         await tellLead(d, `[LOST ${lane.key}] thread ${lane.threadId} closed without a final answer`, "duty");
         events.push({ lane: lane.key, action: "lost" });
+      } else if (action === "failed") {
+        await tellLead(d, `[FAILED ${lane.key}] Codex turn failed; lane kept open for recovery`, "duty");
+        events.push({ lane: lane.key, action: "failed" });
       } else if (action === "nudge") {
         await send(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(idleMin)), dori: d.doriCmd }), "duty");
         events.push({ lane: lane.key, action: `nudge-${lane.nudges}` });

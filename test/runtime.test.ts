@@ -48,7 +48,7 @@ test("approval requests block until an explicit response, and stale responses ar
 test("failed turns are not success, and a disconnect rejects pending requests promptly", async () => {
   const { home, runtime: r } = await setup(); const id = await r.create("sample", home, "fixture");
   await r.deliver(id, "FAIL"); await until(() => r.sessions.get(id)?.lastTurnStatus === "failed");
-  expect(await r.status(id)).toBe("unknown");
+  expect(await r.status(id)).toBe("failed");
   const second = await r.create("sample2", home, "fixture");
   await expect(r.deliver(second, "DROP")).rejects.toThrow("disconnected");
   expect(r.sessions.get(second)?.uncertainDelivery).toBe(true);
@@ -127,3 +127,15 @@ test("disconnect also stops helpers in its isolated app-server process group", a
     await codex.disconnect(); rmSync(home, { recursive: true, force: true });
   }
 }, 8000);
+
+test("confirmed failures can recover without restarting other lanes and failed reviews never pass", async () => {
+  const { home, runtime: r } = await setup();
+  const other = await r.create("other", home, "fixture"); await r.deliver(other, "HOLD");
+  const id = await r.create("recover", home, "fixture"); await r.deliver(id, "FAIL");
+  await until(() => r.sessions.get(id)?.status === "failed");
+  await r.deliver(id, "RECOVERED"); await until(() => r.sessions.get(id)?.status === "done");
+  expect(r.sessions.get(id)?.output).toBe("RECOVERED"); expect(await r.status(other)).toBe("working");
+  await expect(r.review("FAIL", home)).rejects.toThrow("review failed");
+  const failedReview = [...r.sessions.values()].find((s) => s.name === "review")!;
+  expect(failedReview).toMatchObject({ closed: true, lastTurnStatus: "failed" });
+});
