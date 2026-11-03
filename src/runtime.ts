@@ -512,7 +512,9 @@ export class Runtime {
     this.closing.add(id);
     try {
       if (["working", "blocked", "unknown", "recovery"].includes(await this.status(id))) throw new Error("finish or recover the turn before closing");
-      await this.codex.request("thread/archive", { threadId: id });
+      // Shared archive has no expected-turn precondition and could shut down a
+      // native turn admitted after the idle check. Retire only our registration.
+      if (!this.codex.shared) await this.codex.request("thread/archive", { threadId: id });
       s.closed = true; s.status = "gone"; this.save(s);
     } finally { this.closing.delete(id); }
   }
@@ -539,47 +541,26 @@ export class Runtime {
 
   private async sharedReview(id: string, text: string): Promise<string> {
     const clientId = randomUUID();
-    let reviewed: AcceptedDelivery | undefined, terminal = false;
-    try {
-      await this.deliver(id, text, clientId);
-      const s = this.owned(id), accepted = s.acceptedDelivery;
-      if (!accepted || accepted.clientId !== clientId || accepted.created !== true) throw new Error("review was not proven newly created; no receipt written");
-      reviewed = { ...accepted };
-      const deadline = Date.now() + this.reviewTimeoutMs;
-      while (Date.now() < deadline) {
-        if (s.acceptedDelivery?.turnId !== reviewed.turnId || s.acceptedDelivery.clientId !== clientId || s.acceptedDelivery.created !== true) throw new Error("review submission identity changed; no receipt written");
-        const exact = await this.historyTurn(id, reviewed.turnId, deadline);
-        if (exact && ["completed", "failed", "interrupted"].includes(exact.status)) {
-          terminal = true;
-          if (exact.status !== "completed") throw new Error("review failed or interrupted; no receipt written");
-          const items = await this.turnItems(id, reviewed.turnId, deadline);
-          if (items.find(item => item.type === "userMessage")?.clientId !== clientId) throw new Error("review creation provenance changed; no receipt written");
-          const final = items.filter(item => item.type === "agentMessage" && item.phase !== "commentary" && typeof item.text === "string").at(-1);
-          if (!final) throw new Error("review final output is unconfirmed; no receipt written");
-          return final.text;
-        }
-        await Bun.sleep(100);
+    await this.deliver(id, text, clientId);
+    const s = this.owned(id), accepted = s.acceptedDelivery;
+    if (!accepted || accepted.clientId !== clientId || accepted.created !== true) throw new Error("review was not proven newly created; no receipt written");
+    const reviewed = { ...accepted };
+    const deadline = Date.now() + this.reviewTimeoutMs;
+    while (Date.now() < deadline) {
+      if (s.acceptedDelivery?.turnId !== reviewed.turnId || s.acceptedDelivery.clientId !== clientId || s.acceptedDelivery.created !== true) throw new Error("review submission identity changed; no receipt written");
+      const exact = await this.historyTurn(id, reviewed.turnId, deadline);
+      if (exact && ["completed", "failed", "interrupted"].includes(exact.status)) {
+        if (exact.status !== "completed") throw new Error("review failed or interrupted; no receipt written");
+        const items = await this.turnItems(id, reviewed.turnId, deadline);
+        if (items.find(item => item.type === "userMessage")?.clientId !== clientId) throw new Error("review creation provenance changed; no receipt written");
+        const final = items.filter(item => item.type === "agentMessage" && item.phase !== "commentary" && typeof item.text === "string").at(-1);
+        if (!final) throw new Error("review final output is unconfirmed; no receipt written");
+        return final.text; // Retain shared review chats; archival has no safe turn precondition.
       }
-      if (s.ownedTurnId === reviewed.turnId) { await this.interrupt(id); terminal = true; }
-      throw new Error("review timed out; no receipt written");
-    } finally {
-      // A raced native review or a newer native turn must never be archived by this collector.
-      if (reviewed && terminal) await this.closeSharedReview(id, reviewed);
+      await Bun.sleep(100);
     }
-  }
-
-  private async closeSharedReview(id: string, reviewed: AcceptedDelivery): Promise<void> {
-    const s = this.owned(id);
-    if (this.busy.has(id) || this.closing.has(id) || this.interrupting.has(id)) return;
-    this.closing.add(id);
-    try {
-      const revision = this.revisions.get(id) ?? 0;
-      const state = await this.codex.request("thread/read", { threadId: id, includeTurns: false });
-      const latest = (await this.codex.request("thread/turns/list", { threadId: id, sortDirection: "desc", limit: 1, itemsView: "notLoaded" })).data?.[0];
-      if (state.thread?.id !== id || state.thread.status?.type !== "idle" || latest?.id !== reviewed.turnId || !["completed", "failed", "interrupted"].includes(latest.status) || (this.revisions.get(id) ?? 0) !== revision || s.acceptedDelivery?.turnId !== reviewed.turnId || s.acceptedDelivery.clientId !== reviewed.clientId || s.acceptedDelivery.created !== true) return;
-      await this.codex.request("thread/archive", { threadId: id });
-      s.closed = true; s.status = "gone"; this.save(s);
-    } finally { this.closing.delete(id); }
+    if (s.ownedTurnId === reviewed.turnId) await this.interrupt(id);
+    throw new Error("review timed out; no receipt written");
   }
 
   async shutdown(): Promise<void> {

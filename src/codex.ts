@@ -100,6 +100,7 @@ export class Codex {
   }
 
   request(method: string, params: unknown = {}, timeoutMs = this.timeoutMs): Promise<any> {
+    if (this.shared && method === "thread/archive") return Promise.reject(new Error("shared Codex chats are retained; thread/archive is disabled"));
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => { this.pending.delete(id); reject(new Error(`Codex RPC timeout: ${method}; inspect state before retrying`)); }, timeoutMs);
