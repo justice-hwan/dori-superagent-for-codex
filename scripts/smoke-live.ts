@@ -26,7 +26,7 @@ try {
   await sessions.call("shutdown");
   for (let n = 0; n < 100 && existsSync(socketPath(home)); n++) await Bun.sleep(50);
   await ensureRuntime(home);
-  if (await sessions.status(id!) !== "idle" || (await sessions.read(id!)).trim() !== output) throw new Error("Used thread did not resume after runtime restart");
+  if (!["idle", "done"].includes(await sessions.status(id!)) || (await sessions.read(id!)).trim() !== output) throw new Error("Used thread did not resume after runtime restart");
   console.log(JSON.stringify({ marker: output, status, resumed: true, threadId: id, home }));
 } finally {
   if (id) {

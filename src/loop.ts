@@ -1,11 +1,12 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
 // never pushes, never closes a thread and never edits a lane record. See README.md.
-import { appendFileSync, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { createHash, randomUUID } from "node:crypto";
+import { appendFileSync, copyFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { KEY_RE, Refusal, startLane, tellLead, type Deps } from "./harness.ts";
 import type { Item, Lane, LoopRun } from "./store.ts";
+import { acquireFileLease, type FileLease } from "./lock.ts";
 
 export const HOUR = 3_600_000;
 export const STALE_HOURS = 3;
@@ -141,108 +142,6 @@ export async function backlogImport(d: Deps, repo: string, label = "dori", cwd?:
   return { added, capped: issues.length >= IMPORT_LIMIT };
 }
 
-// ---------- lock ----------
-
-type LockBody = { pid: number; at: number; nonce: string };
-
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return (e as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function readLock(path: string): LockBody | "missing" | "corrupt" {
-  let text: string;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return "missing";
-    throw e;
-  }
-  try {
-    const v = JSON.parse(text) as Partial<LockBody>;
-    return typeof v.pid === "number" && typeof v.nonce === "string" ? (v as LockBody) : "corrupt";
-  } catch {
-    return "corrupt";
-  }
-}
-
-const sameLock = (a: LockBody | "missing" | "corrupt", b: LockBody | "missing" | "corrupt"): boolean =>
-  typeof a === "string" || typeof b === "string" ? a === b : a.nonce === b.nonce;
-
-/**
- * The lock is created whole with link(2), so it never exists half-written. A dead holder's (or corrupt) lock is
- * moved aside with rename(2), which only one process can win; if what was moved is not the lock judged stale, it
- * is linked back and this process backs off.
- */
-function acquire(d: Deps): { nonce: string } | { holder: string } {
-  const path = d.store.loopPath("lock");
-  const nonce = randomUUID();
-  const tmp = `${path}.${nonce}`;
-  writeFileSync(tmp, JSON.stringify({ pid: process.pid, at: d.now(), nonce }));
-  try {
-    for (let i = 0; i < 3; i++) {
-      try {
-        linkSync(tmp, path);
-        return { nonce };
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-      }
-      const seen = readLock(path);
-      if (seen === "missing") continue;
-      if (seen !== "corrupt" && alive(seen.pid)) return { holder: `locked by pid ${seen.pid}` };
-      const aside = `${path}.stale.${nonce}`;
-      try {
-        renameSync(path, aside);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "ENOENT") continue;
-        throw e;
-      }
-      if (!sameLock(readLock(aside), seen)) {
-        restore(aside, path);
-        return { holder: "lock changed hands during takeover" };
-      }
-      rmSync(aside, { force: true });
-    }
-    return { holder: "lock contended" };
-  } finally {
-    rmSync(tmp, { force: true });
-  }
-}
-
-const holds = (d: Deps, nonce: string): boolean => {
-  const l = readLock(d.store.loopPath("lock"));
-  return typeof l !== "string" && l.nonce === nonce;
-};
-
-function release(d: Deps, nonce: string): void {
-  const path = d.store.loopPath("lock");
-  const aside = `${path}.release.${nonce}`;
-  try {
-    renameSync(path, aside);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
-    throw e;
-  }
-  const moved = readLock(aside);
-  if (typeof moved === "string" || moved.nonce !== nonce) restore(aside, path);
-  else rmSync(aside, { force: true });
-}
-
-/** Puts a lock that was moved by mistake back. If a newer lock took its place, the moved one is left aside, never deleted. */
-export function restore(aside: string, path: string): void {
-  try {
-    linkSync(aside, path);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "EEXIST") return;
-    throw e;
-  }
-  rmSync(aside, { force: true });
-}
-
 // ---------- one run ----------
 
 const PR_RE = /github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/;
@@ -330,7 +229,7 @@ async function audit(d: Deps, run: LoopRun): Promise<void> {
 
 const isOpenLane = (status: string): boolean => status !== "done" && status !== "lost";
 
-async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, maxLoad: number | undefined, nonce: string): Promise<void> {
+async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, maxLoad: number | undefined, lease: FileLease): Promise<void> {
   if (!d.store.roles().lead) {
     run.held.push("no lead thread registered");
     return;
@@ -358,7 +257,7 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
       run.held.push(`host busy: load ${currentHost.load1.toFixed(1)} (limit ${maxLoad ?? currentHost.cores}), mem free ${currentHost.memFreePct}%`);
       break;
     }
-    if (!holds(d, nonce)) {
+    if (!lease.holds()) {
       run.held.push("lock lost to another loop; no more starts this run");
       break;
     }
@@ -444,8 +343,8 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
   const empty = { synced: [], findings: [], started: [], held: [], asked: [] };
   const stop = d.store.stop();
   if (stop) return { at: d.now(), skipped: `stopped: ${stop.reason}`, ...empty };
-  const lock = acquire(d);
-  if ("holder" in lock) return { at: d.now(), skipped: lock.holder, ...empty };
+  const lock = acquireFileLease(d.store.loopPath("lock"));
+  if (!lock) return { at: d.now(), skipped: "locked or claim gate held; inspect before recovery", ...empty };
   try {
     const last = d.store.lastRun();
     if (last && !opts.force && d.now() - last.at < interval) {
@@ -454,7 +353,7 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
     const run: LoopRun = { at: d.now(), synced: [], findings: [], started: [], held: [], asked: [] };
     await sync(d, run);
     await audit(d, run);
-    await pull(d, run, maxLanes, maxStarts, opts.maxLoad, lock.nonce);
+    await pull(d, run, maxLanes, maxStarts, opts.maxLoad, lock);
     ask(d, run);
     const items = d.store.items();
     const running = new Set(items.filter((i) => i.status === "running").map((i) => i.id));
@@ -479,7 +378,7 @@ export async function loopTick(d: Deps, opts: LoopOpts = {}): Promise<LoopRun> {
     }
     return run;
   } finally {
-    release(d, lock.nonce);
+    lock.release();
   }
 }
 

@@ -4,7 +4,7 @@ import { Codex, type RpcMessage } from "./codex.ts";
 import { socketPath, validThread, type AgentStatus } from "./sessions.ts";
 import { acquireFileLease } from "./lock.ts";
 
-export type Session = { id: string; name: string; cwd: string; instructions: string; status: AgentStatus; model?: string; readOnly?: boolean; everStarted?: boolean; uncertainDelivery?: boolean; pendingDeliveryId?: string; lastDeliveryId?: string; turnId?: string; lastTurnStatus?: string; output: string; closed?: boolean };
+export type Session = { id: string; name: string; cwd: string; instructions: string; status: AgentStatus; model?: string; readOnly?: boolean; everStarted?: boolean; uncertainDelivery?: boolean; requiresRecovery?: boolean; pendingDeliveryId?: string; lastDeliveryId?: string; turnId?: string; lastTurnId?: string; lastTurnStatus?: string; output: string; closed?: boolean };
 export type Request = { id: number | string; method: string; params: any };
 
 export class Runtime {
@@ -91,9 +91,21 @@ export class Runtime {
       throw e;
     }
     const status = r.thread?.status;
+    let latest: any;
+    if (status?.type === "idle" && s.everStarted) {
+      try { latest = (await this.codex.request("thread/turns/list", { threadId: s.id, sortDirection: "desc", limit: 1, itemsView: "notLoaded" })).data?.[0]; }
+      catch { /* An unavailable outcome requires recovery; idle alone does not certify completion. */ }
+    }
     // A resume never starts a model turn. Unknown server states remain unsendable.
     if ((this.revisions.get(s.id) ?? 0) === revision) {
-      s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? "working" : status?.type === "idle" ? s.lastTurnStatus === "failed" ? "failed" : "idle" : "unknown";
+      if (status?.type === "idle" && s.everStarted) {
+        const expected = s.turnId ?? s.lastTurnId;
+        const confirmed = latest && typeof latest.id === "string" && (!expected || latest.id === expected) && ["completed", "interrupted", "failed"].includes(latest.status);
+        s.requiresRecovery = !confirmed;
+        if (confirmed) { s.lastTurnId = latest.id; s.lastTurnStatus = latest.status; }
+        s.turnId = undefined;
+      }
+      s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? "working" : status?.type === "idle" ? s.requiresRecovery ? "recovery" : s.lastTurnStatus === "failed" ? "failed" : s.lastTurnStatus === "completed" ? "done" : "idle" : "unknown";
     }
     this.loaded.add(s.id); this.save(s);
   }
@@ -115,8 +127,8 @@ export class Runtime {
     this.busy.add(id);
     try {
       await this.resume(s);
-      if (s.status !== "idle" && s.status !== "done" && s.status !== "failed") throw new Error(`thread is ${s.status}; message not submitted`);
-      s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.everStarted = true; s.pendingDeliveryId = deliveryId;
+      if (s.status !== "idle" && s.status !== "done" && s.status !== "failed" && s.status !== "recovery") throw new Error(`thread is ${s.status}; message not submitted`);
+      s.status = "working"; s.output = ""; s.lastTurnStatus = undefined; s.requiresRecovery = false; s.everStarted = true; s.pendingDeliveryId = deliveryId;
       // Write-ahead uncertainty closes the crash window before the external submission.
       s.uncertainDelivery = true; this.save(s);
       this.submitting.add(id);
@@ -165,6 +177,8 @@ export class Runtime {
       const turn = p.turn;
       if (typeof turn?.id === "string") this.finished.add(turn.id);
       s.lastTurnStatus = turn?.status;
+      if (typeof turn?.id === "string") s.lastTurnId = turn.id;
+      s.requiresRecovery = false;
       s.status = s.uncertainDelivery ? "unknown" : turn?.status === "completed" ? "done" : turn?.status === "interrupted" ? "idle" : turn?.status === "failed" ? "failed" : "unknown";
       s.turnId = undefined;
       for (const [id, request] of this.requests) if (request.params.threadId === s.id) this.requests.delete(id);
@@ -185,7 +199,7 @@ export class Runtime {
     if ((this.revisions.get(id) ?? 0) !== revision) throw new Error("thread state changed during reconciliation; inspect it again");
     if (r.thread?.status?.type !== "idle") throw new Error("thread must be idle before reconciling delivery");
     if (delivered) s.lastDeliveryId = s.pendingDeliveryId;
-    s.pendingDeliveryId = undefined; s.uncertainDelivery = false; s.status = s.lastTurnStatus === "failed" ? "failed" : "idle"; this.save(s);
+    s.pendingDeliveryId = undefined; s.uncertainDelivery = false; s.status = s.requiresRecovery ? "recovery" : s.lastTurnStatus === "failed" ? "failed" : "idle"; this.save(s);
     } finally { this.busy.delete(id); }
   }
 
@@ -229,7 +243,7 @@ export class Runtime {
     if (this.busy.has(id) || this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread operation already in progress; finish it before closing");
     this.closing.add(id);
     try {
-      if (["working", "blocked", "unknown"].includes(await this.status(id))) throw new Error("finish or interrupt the turn before closing");
+      if (["working", "blocked", "unknown", "recovery"].includes(await this.status(id))) throw new Error("finish or recover the turn before closing");
       await this.codex.request("thread/archive", { threadId: id });
       s.closed = true; s.status = "gone"; this.save(s);
     } finally { this.closing.delete(id); }
@@ -245,7 +259,7 @@ export class Runtime {
         if (s.status === "done") return s.output;
         // Pending requests remain visible to the operator without losing the
         // result collector or deadline. Never answer them automatically.
-        if (s.status === "unknown" || s.status === "failed") throw new Error("review failed or disconnected; no receipt written");
+        if (s.status === "unknown" || s.status === "failed" || s.status === "recovery") throw new Error("review failed or disconnected; no receipt written");
         await Bun.sleep(100);
       }
       await this.interrupt(id); throw new Error("review timed out; no receipt written");

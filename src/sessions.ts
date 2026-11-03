@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export type AgentStatus = "idle" | "working" | "blocked" | "done" | "failed" | "unknown" | "gone";
+export type AgentStatus = "idle" | "working" | "blocked" | "done" | "failed" | "recovery" | "unknown" | "gone";
 export interface SessionRuntime {
   known(threadId: string): boolean;
   create(name: string, cwd: string, instructions: string, model?: string): Promise<string>;
@@ -26,7 +26,7 @@ export class Sessions implements SessionRuntime {
     let response: Response;
     try {
       // Include resume/submission and cleanup, rather than only model polling.
-      const deadline = method === "review" ? 1_400_000 : method === "interrupt" ? 100_000 : method === "close" || method === "deliver" ? 65_000 : 35_000;
+      const deadline = method === "review" ? 1_400_000 : method === "interrupt" ? 130_000 : method === "close" || method === "deliver" || method === "reconcile" ? 100_000 : method === "status" ? 65_000 : 35_000;
       response = await fetch("http://localhost/rpc", { unix: socketPath(this.home), method: "POST", body: JSON.stringify({ method, args }), timeout: false, signal: AbortSignal.timeout(deadline) });
     } catch { throw new Error("Dori runtime unavailable or request timed out; inspect status before retrying (start with dori-codex up)"); }
     const result = await response.json() as { value?: T; error?: string };

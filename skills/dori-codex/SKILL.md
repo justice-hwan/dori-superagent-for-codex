@@ -12,7 +12,7 @@ Use `dori-codex` from this repository. The runtime uses Codex app-server and kee
 3. For a task, write a concrete brief and use `dori-codex start <key> --brief FILE --cwd DIR`. Lanes report milestones and call `ready` with evidence. READY is a claim; inspect the evidence before `done`.
 4. Send follow-ups using `send`. Busy or blocked threads keep messages in their inbox until they can receive them. Never treat a timeout as proof that input was not submitted.
 5. Read pending requests with `dori-codex requests`. Only answer an approval or question with the user's explicit decision, via `requests answer ID --json FILE`. Do not grant permissions automatically.
-6. Reviews require a CLEAR receipt for the exact head and base and green checks before `merge`. Never merge a changed head or base using an old receipt. Merge commits are the default, preserving upstream history.
+6. Reviews require a CLEAR receipt for the exact repository, head, base and base branch, plus green checks at that head. `merge` prepares only those reviewed objects and advances the base with an exact expected-value lease. A changed base rejects the push. A newer PR head stays outside the fixed candidate; report pair integration separately until GitHub confirms the PR merged. Never close newer work or bypass a rejection. Only merge commits are supported, preserving upstream history. After an uncertain response, retry the same command to verify its saved candidate before another push.
 7. `dori-codex interrupt TARGET` interrupts one owned turn; `dori-codex down` stops the local runtime and its owned work. It does not stop other Codex services or remote machines.
 8. The hourly backlog loop is opt-in: `up --auto-loop` or `loop --once`. Do not add work the user did not authorize.
 

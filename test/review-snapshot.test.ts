@@ -24,10 +24,10 @@ test("review snapshot uses committed immutable source and diff despite dirty/new
 });
 
 test("review writes no receipt if either head or base moves while the model reviews", async () => {
-  for (const moving of ["head", "base"] as const) {
+  for (const moving of ["head", "base", "branch"] as const) {
     const w = new World(), d = w.deps(); let reviewed = false;
-    const initial = { headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40) };
-    w.gh = () => ({ code: 0, stdout: JSON.stringify({ ...initial, ...(reviewed ? { [moving === "head" ? "headRefOid" : "baseRefOid"]: "c".repeat(40) } : {}) }) });
+    const initial = { headRefOid: "a".repeat(40), baseRefOid: "b".repeat(40), baseRefName: "main", state: "OPEN", isDraft: false };
+    w.gh = () => ({ code: 0, stdout: JSON.stringify({ ...initial, ...(reviewed ? moving === "branch" ? { baseRefName: "release" } : { [moving === "head" ? "headRefOid" : "baseRefOid"]: "c".repeat(40) } : {}) }) });
     w.reviewer = () => { reviewed = true; return { code: 0, stdout: "VERDICT: CLEAR" }; };
     try {
       await expect(review(d, "o/r#1")).rejects.toThrow("changed during review");
@@ -38,13 +38,28 @@ test("review writes no receipt if either head or base moves while the model revi
 
 test("merge rejects changed bases and failed check commands and preserves history by default", async () => {
   const w = new World(), d = w.deps(), head = "a".repeat(40); let base = "b".repeat(40), checkCode = 0;
-  w.gh = (a) => a[1] === "view" ? { code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: base }) } : { code: checkCode, stdout: JSON.stringify([{ name: "verify", bucket: "pass" }]) };
+  w.gh = (a) => a[1] === "view" ? { code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: base, baseRefName: "main", state: "OPEN", isDraft: false }) } : { code: checkCode, stdout: JSON.stringify([a[1]!.includes("check-runs") ? { check_runs: [{ name: "verify", status: "completed", conclusion: "success" }] } : { statuses: [] }]) };
   try {
     await review(d, "o/r#1"); base = "c".repeat(40);
     await expect(mergeGate(d, "o/r#1")).rejects.toThrow("base changed");
     await review(d, "o/r#1"); checkCode = 1;
     await expect(mergeGate(d, "o/r#1")).rejects.toThrow("unconfirmed");
-    checkCode = 0; await mergeGate(d, "o/r#1");
-    expect(w.calls.at(-1)?.argv).toContain("--merge"); expect(w.calls.at(-1)?.argv).not.toContain("--squash");
+    checkCode = 0; await mergeGate(d, "o/r#1", { dryRun: true });
+    await expect(mergeGate(d, "o/r#1", { method: "squash" })).rejects.toThrow("only merge commits");
+  } finally { rmSync(d.store.root, { recursive: true, force: true }); }
+});
+
+test("CI is queried by captured SHA and a moved head cannot reach integration", async () => {
+  const w = new World(), d = w.deps(), oldHead = "a".repeat(40), base = "b".repeat(40); let head = oldHead;
+  w.gh = args => {
+    if (args[0] === "pr") return { code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: base, baseRefName: "main", state: "OPEN", isDraft: false }) };
+    head = "c".repeat(40);
+    return { code: 0, stdout: JSON.stringify([args[1]!.includes("check-runs") ? { check_runs: [{ name: "verify", status: "completed", conclusion: "success" }] } : { statuses: [] }]) };
+  };
+  try {
+    await review(d, "o/r#1");
+    await expect(mergeGate(d, "o/r#1")).rejects.toThrow("changed while checking");
+    expect(w.calls.filter(c => c.cmd === "gh" && c.argv[0] === "api").every(c => c.argv[1]!.includes(oldHead))).toBe(true);
+    expect(w.calls.some(c => c.cmd === "git")).toBe(false);
   } finally { rmSync(d.store.root, { recursive: true, force: true }); }
 });

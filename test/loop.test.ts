@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { done, dutyTick, memFreePct, ready, Refusal, report, startLane } from "../src/harness.ts";
-import { backlogAdd, backlogDecide, backlogDrop, backlogImport, HOUR, importId, loopTick, msUntilNext, restore } from "../src/loop.ts";
+import { backlogAdd, backlogDecide, backlogDrop, backlogImport, HOUR, importId, loopTick, msUntilNext } from "../src/loop.ts";
 import type { Exec } from "../src/process.ts";
 import { World } from "./fake.ts";
 
@@ -218,7 +218,7 @@ describe("hourly loop", () => {
     expect((await at(1)).started).toEqual(["pick-db (p5)"]);
   });
 
-  test("kill switch: a stopped loop does nothing at all; a live lock skips, a dead or corrupt one is taken over", async () => {
+  test("kill switch: a stopped loop does nothing at all; a live lock skips, a dead one is taken over; corrupt state needs inspection", async () => {
     const { w, d, lead, add, tick } = setup();
     add("work");
     d.store.setStop(1, "maintenance");
@@ -231,13 +231,13 @@ describe("hourly loop", () => {
     d.store.clearStop();
 
     writeFileSync(d.store.loopPath("lock"), JSON.stringify({ pid: process.ppid, at: 0, nonce: "other" }));
-    expect((await tick()).skipped).toBe(`locked by pid ${process.ppid}`);
+    expect((await tick()).skipped).toContain("locked");
     expect(readFileSync(d.store.loopPath("lock"), "utf8")).toContain('"other"');
     writeFileSync(d.store.loopPath("lock"), "{\"pid\": 12");
-    expect((await tick()).started).toEqual(["work (p5)"]);
+    await expect(tick()).rejects.toThrow("inspect");
     writeFileSync(d.store.loopPath("lock"), JSON.stringify({ pid: 2147483647, at: 0, nonce: "dead" }));
     w.clock += HOUR;
-    expect((await tick()).started).toEqual([]);
+    expect((await tick()).started).toEqual(["work (p5)"]);
     expect(readdirSync(join(d.store.root, "loop")).filter((f) => f.startsWith("lock"))).toEqual([]);
   });
 
@@ -352,21 +352,6 @@ describe("hardening", () => {
     expect(run.started).toEqual(["first (p5)"]);
     expect(run.held).toContain("lock lost to another loop; no more starts this run");
     expect(readFileSync(d.store.loopPath("lock"), "utf8")).toContain("usurper");
-  });
-
-  test("a moved lock that cannot be put back because a newer one exists is left aside, never deleted", () => {
-    const { d } = setup();
-    const path = d.store.loopPath("lock");
-    const aside = `${path}.release.x`;
-    writeFileSync(aside, JSON.stringify({ pid: 1, at: 0, nonce: "moved" }));
-    writeFileSync(path, JSON.stringify({ pid: 2, at: 0, nonce: "newer" }));
-    restore(aside, path);
-    expect(readFileSync(path, "utf8")).toContain("newer");
-    expect(readFileSync(aside, "utf8")).toContain("moved");
-    rmSync(path);
-    restore(aside, path);
-    expect(readFileSync(path, "utf8")).toContain("moved");
-    expect(readdirSync(join(d.store.root, "loop")).filter((f) => f.includes(".release."))).toEqual([]);
   });
 
   test("lost lanes and failed starts are counted apart, so a question never states a mixed count", async () => {

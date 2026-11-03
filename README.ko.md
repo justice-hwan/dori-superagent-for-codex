@@ -4,7 +4,7 @@
 
 ## 시작
 
-Bun 1.3 이상, `app-server`를 지원하는 Codex CLI, `codex login`이 필요합니다. PR 리뷰·머지는 로그인된 GitHub CLI `gh`도 필요합니다. Unix socket을 사용하므로 macOS·Linux를 대상으로 합니다.
+Bun 1.3 이상, Codex CLI 0.164 이상, Git 2.38 이상, `codex login`이 필요합니다. PR 리뷰·머지는 로그인된 GitHub CLI `gh`도 필요합니다. Unix socket을 사용하므로 macOS·Linux를 대상으로 합니다.
 
 ```sh
 bun install --frozen-lockfile --ignore-scripts
@@ -32,7 +32,7 @@ dori-codex merge owner/repo#123 --dry-run
 dori-codex done fix-login
 ```
 
-READY에는 증거가 필요하고, 리드가 실제 증거를 확인해야 합니다. 모델 응답이 끝났다는 이유로 완료 처리하거나 머지하지 않습니다. 머지에는 현재 head와 base의 CLEAR 리뷰와 하나 이상의 통과한 체크가 필요합니다. head가 바뀌거나 체크가 없거나 모두 skip이면 거절합니다. 리뷰는 정확한 head·base의 로컬 원본 Git 소스 스냅샷과 diff를 만들어 읽기 전용 Codex 세션에서 실행합니다. 해당 커밋을 가진 로컬 clone에서 명령을 실행해야 합니다. 리뷰 중 head나 base가 바뀌면 승인 기록을 만들지 않습니다. 기본 머지는 upstream 이력을 유지하는 merge commit이며, squash·rebase는 `--method`로 명시해야 합니다.
+READY에는 증거가 필요하고, 리드가 실제 증거를 확인해야 합니다. 모델 응답이 끝났다는 이유로 완료 처리하거나 머지하지 않습니다. 머지에는 현재 head와 base의 CLEAR 리뷰와 하나 이상의 통과한 체크가 필요합니다. head가 바뀌거나 체크가 없거나 모두 skip이면 거절합니다. 리뷰는 정확한 head·base의 로컬 원본 Git 소스 스냅샷과 diff를 만들어 읽기 전용 Codex 세션에서 실행합니다. 해당 커밋을 가진 로컬 clone에서 명령을 실행해야 합니다. 리뷰 중 head나 base가 바뀌면 승인 기록을 만들지 않습니다. 병합은 검토한 head와 base만 부모로 갖는 고정 merge commit을 만들고, 원격 base가 검토 당시 값일 때만 반영합니다. 병합 후보를 먼저 기록하므로 응답 유실 후에도 같은 후보를 확인합니다. PR head가 뒤늦게 바뀌면 새 커밋은 들어가지 않으며, 검토한 쌍의 반영과 GitHub PR 병합 상태를 구분해서 보고합니다. merge commit만 지원해 upstream 이력을 보존합니다.
 
 바쁜 세션으로 보낸 메시지는 로컬 inbox에 보관했다가 받을 수 있을 때 묶어서 전달합니다. 메시지 묶음은 고정된 전달 ID로 중복 제출을 막습니다. 수신을 확인할 수 없는 타임아웃은 재시작 후에도 자동 재전송하지 않습니다. Codex 이력을 확인한 뒤 `reconcile 대상 --delivered true` 또는 `--delivered false`로 전달 여부를 명시해야 합니다. `read`는 최근 응답을 표시하고, 전체 이력은 Codex 자체 로컬 저장소에 남습니다.
 
@@ -79,3 +79,5 @@ bun run smoke:live
 
 
 런타임·inbox의 오래된 잠금은 claim gate 안에서 회수합니다. 짧은 잠금 생성 구간에서 프로세스가 죽어 `.claim` 파일이 남으면 소유자 상태를 확인한 뒤 수동으로 정리해야 합니다. 시작 여부가 불명확한 lane은 대기 상태로 유지하며, 확인 전에는 대체 세션을 만들지 않습니다. 종료는 자신이 시작한 app-server의 실제 종료까지 확인합니다.
+
+재시작 때 idle이라는 이유만으로 성공을 추정하지 않고 최신 저장 turn 결과를 조회합니다. 실패·미완료·결과 불명 상태로는 READY를 닫을 수 없으며, 명시적인 새 복구 지시를 받을 수 있습니다. 전달 여부의 불확실성은 여전히 `reconcile`로 판단해야 합니다.

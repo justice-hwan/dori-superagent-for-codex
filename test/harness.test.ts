@@ -208,8 +208,8 @@ describe("review + merge gate", () => {
   const head = "a".repeat(40);
   function gh(w: World, checks: unknown[]) {
     w.gh = (argv) => {
-      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: "b".repeat(40) }) };
-      if (argv[1] === "checks") return { code: 0, stdout: JSON.stringify(checks) };
+      if (argv[1] === "view") return { code: 0, stdout: JSON.stringify({ headRefOid: head, baseRefOid: "b".repeat(40), baseRefName: "main", state: "OPEN", isDraft: false }) };
+      if (argv[0] === "api") return { code: 0, stdout: JSON.stringify([argv[1]!.includes("check-runs") ? { check_runs: (checks as {name:string;bucket:string}[]).map(c => ({ name: c.name, status: "completed", conclusion: c.bucket === "pass" ? "success" : c.bucket === "skipping" ? "skipped" : "failure" })) } : { statuses: [] }]) };
       if (argv[1] === "merge") return { code: 0, stdout: "" };
       return { code: 1, stdout: "" };
     };
@@ -231,8 +231,8 @@ describe("review + merge gate", () => {
     gh(w, [{ name: "test", bucket: "skipping" }]);
     await expect(mergeGate(d, "o/r#7")).rejects.toThrow("every check was skipped");
     gh(w, [{ name: "test", bucket: "pass" }, { name: "docs", bucket: "skipping" }]);
-    expect(await mergeGate(d, "o/r#7")).toBe(`MERGED o/r#7 head=${head}`);
-    expect(w.calls.at(-1)!.argv).toContain("--match-head-commit");
+    expect(await mergeGate(d, "o/r#7", { dryRun: true })).toBe(`MERGE_OK o/r#7 head=${head} (dry run)`);
+    expect(w.calls.filter(c => c.cmd === "gh" && c.argv[0] === "api").every(c => c.argv[1]!.includes(head))).toBe(true);
   });
 
   test("a reviewer without a VERDICT line writes no receipt", async () => {

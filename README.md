@@ -18,7 +18,7 @@ flowchart LR
 
 ## Install and use
 
-Requires Bun 1.3+, an installed Codex CLI with `app-server`, and a completed `codex login`. GitHub review/merge commands also need authenticated `gh`. macOS and Linux are supported; the local transport uses a Unix socket.
+Requires Bun 1.3+, Codex CLI 0.164+ with `app-server`, Git 2.38+ and a completed `codex login`. GitHub review/merge commands also need authenticated `gh` and a configured Git author identity. macOS and Linux are supported; the local transport uses a Unix socket.
 
 ```sh
 git clone https://github.com/justice-hwan/dori-superagent-for-codex.git
@@ -51,13 +51,19 @@ dori-codex merge owner/repo#123
 dori-codex done fix-login
 ```
 
-READY is a claim. The lead must inspect the evidence. A completed model turn does not automatically mark a lane READY or merge its PR. The merge command re-reads both head and base and uses `--match-head-commit`; stale receipts, failed check commands, missing checks, failures and all-skipped checks are refused. Merge commits are the default to preserve imported upstream ancestry; `--method squash|rebase` is an explicit alternative. Reviews run in a separate read-only Codex thread against an immutable raw Git source snapshot and diff. Run the command from a clone containing the PR head and base commits. The full review and metadata are saved under the local state directory. Only a successful turn with an explicit VERDICT and unchanged head/base pair can produce a receipt.
+READY is a claim. The lead must inspect the evidence. A completed model turn does not automatically mark a lane READY or merge its PR. Reviews run in a separate read-only Codex thread against immutable raw Git source and diff, and bind receipts to the repository, head, base and base branch name. Run commands from a clone containing both commits. The full review and metadata are saved locally. Only a successful turn with an explicit VERDICT and unchanged target identity can produce a receipt.
+
+`merge` checks CI by the captured head SHA and creates a fixed merge commit whose two parents are exactly the reviewed base and head. It records that candidate before pushing, then uses an explicit expected-value lease on the base ref. A concurrent base change rejects the push; branch-protection rejection has no fallback. Retries verify the saved candidate on the remote before attempting another push. This integrates only the reviewed objects and preserves upstream ancestry. Only merge commits are supported.
+
+A PR head can move independently after the last query. Its newer commits cannot enter the fixed candidate. The command reports `INTEGRATED_REVIEWED_PAIR` until GitHub independently confirms the PR is merged at the reviewed head; it never closes a PR containing newer work. Git credentials use the existing authenticated `gh` helper. Missing checks, failed check commands, failures and all-skipped checks are refused.
 
 Busy/blocked threads keep their messages on disk until they can receive a new turn. Inbox batches carry stable delivery IDs to avoid replay after a lost local response. A timeout or disconnection without a confirmed start is held as an uncertain delivery across restarts: inspect Codex history, then use `reconcile TARGET --delivered true|false` explicitly. `read TARGET` shows the latest assistant output; it is not a full transcript export. Full thread history stays in Codex's own local storage.
 
 A confirmed failed turn can receive recovery instructions without restarting other lanes. New instructions invalidate a lane's earlier READY evidence once per inbox batch; acknowledgement-only retries preserve evidence produced by that batch. Closing requires READY, an empty inbox and a finished turn, and excludes concurrent instruction admission or evidence changes. A refused concurrent command can be retried after closure finishes.
 
 Failed-turn state survives runtime restarts until a recovery turn starts. Reconciliation resumes a saved thread before checking its current idle state, and refuses concurrent delivery or closure. Backlog admission rechecks each task under the same lease used by drop/decision commands; a task cancelled while another start waits cannot launch from an older candidate list.
+
+An idle resume is checked against the latest persisted turn summary. A missed failure remains failed; missing, unrelated or unfinished outcomes become `recovery` and cannot authorize closure. New recovery instructions can start a fresh turn. Uncertain delivery still requires explicit reconciliation. `read` shows output received by this local runtime; the complete history remains in Codex.
 
 Lane and backlog names cannot be `lead`, `duty` or an existing thread ID. Kickoff addresses the newly allocated thread directly.
 

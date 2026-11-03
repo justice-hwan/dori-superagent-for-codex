@@ -1,5 +1,5 @@
 import { mkdirSync, readdirSync, existsSync, appendFileSync, readFileSync, writeFileSync, renameSync, rmSync, unlinkSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { acquireFileLease } from "./lock.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -30,12 +30,15 @@ export type ReviewReceipt = {
   pr: string;
   sha: string;
   baseSha: string;
+  baseBranch?: string;
   verdict: "CLEAR" | "BLOCK";
   model: string;
   at: number;
   summary: string;
   reportPath?: string;
 };
+
+export type PreparedMerge = { pr: string; repo: string; baseBranch: string; head: string; base: string; tree: string; commit: string; confirmedAt?: number; rejected?: boolean };
 
 export type ItemStatus = "open" | "running" | "done" | "dropped";
 
@@ -87,7 +90,7 @@ const checkedId = (id: string): string => {
 
 export class Store {
   constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori-codex")) {
-    for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "sessions", "duty"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
+    for (const d of ["lanes", "inbox", "briefs", "receipts", "merges", "backlog", "loop/runs", "sessions", "duty"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
   }
 
   private readJson<T>(path: string): T | undefined {
@@ -157,7 +160,7 @@ export class Store {
 
   private inboxPath(threadId: string): string {
     if (!/^[a-zA-Z0-9:_-]+$/.test(threadId)) throw new Error("invalid thread id");
-    return join(this.root, "inbox", `${threadId.replaceAll(":", "_")}.jsonl`);
+    return join(this.root, "inbox", `${encodeURIComponent(threadId)}.jsonl`);
   }
 
   enqueue(threadId: string, msg: QueuedMessage): void {
@@ -204,12 +207,12 @@ export class Store {
   inboxThreads(): string[] {
     return readdirSync(join(this.root, "inbox"))
       .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => f.slice(0, -".jsonl".length).replaceAll("_", ":"))
+      .map((f) => decodeURIComponent(f.slice(0, -".jsonl".length)))
       .filter((p) => this.queued(p).length > 0);
   }
 
   private receiptPath(pr: string, sha: string): string {
-    return join(this.root, "receipts", `${pr.replaceAll("/", "__").replace("#", "_")}@${sha}.json`);
+    return join(this.root, "receipts", createHash("sha256").update(`${pr}\0${sha}`).digest("hex") + ".json");
   }
 
   saveReceipt(r: ReviewReceipt): void {
@@ -219,6 +222,13 @@ export class Store {
   receipt(pr: string, sha: string): ReviewReceipt | undefined {
     return this.readJson(this.receiptPath(pr, sha));
   }
+
+  private mergePath(pr: string): string {
+    return join(this.root, "merges", createHash("sha256").update(pr).digest("hex") + ".json");
+  }
+  mergeAttempt(pr: string): PreparedMerge | undefined { return this.readJson(this.mergePath(pr)); }
+  saveMergeAttempt(attempt: PreparedMerge): void { this.writeJson(this.mergePath(attempt.pr), attempt); }
+  lockMerge(pr: string): (() => void) | undefined { return acquireFileLease(this.mergePath(pr) + ".lock")?.release; }
 
   // ---------- backlog ----------
 

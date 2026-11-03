@@ -64,7 +64,7 @@ test("restart resumes used threads, replaces only empty missing threads, and ret
   const restarted = new Runtime(home, new Codex([process.execPath, join(import.meta.dir, "fixtures/fake-codex.ts")]));
   fixtures.push({ home, runtime: restarted });
   await restarted.codex.connect();
-  expect(await restarted.status("used-thread")).toBe("idle");
+  expect(await restarted.status("used-thread")).toBe("done");
   expect(await restarted.status("empty-thread")).toBe("gone");
   expect(await restarted.status("uncertain-thread")).toBe("unknown");
   await expect(restarted.status("missing-used")).rejects.toThrow("no rollout");

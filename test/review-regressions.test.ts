@@ -67,9 +67,10 @@ test("ignored metadata notifications do not veto the authoritative resume state"
       c.onMessage({ method: "thread/tokenUsage/updated", params: { threadId: "resume-thread", tokenUsage: { total: { totalTokens: 1 }, last: { totalTokens: 1 }, modelContextWindow: null } } });
       return { thread: { status: { type: "idle" } } };
     }
+    if (method === "thread/turns/list") return { data: [{ id: "saved-turn", status: "completed" }] };
     return {};
   });
-  const r = new Runtime(root, c); expect(await r.status("resume-thread")).toBe("idle");
+  const r = new Runtime(root, c); expect(await r.status("resume-thread")).toBe("done");
 });
 
 test("resumed lifecycle events cannot accept an uncertain saved delivery, and reconciliation rejects races", async () => {
@@ -221,6 +222,7 @@ test("restart preserves a failed turn and cannot close its earlier READY before 
   writeFileSync(join(d.store.root, "sessions", id + ".json"), JSON.stringify({ id, name: "failed-task", cwd: d.store.root, instructions: "", status: "unknown", output: "partial", everStarted: true, lastTurnStatus: "failed" }));
   const r = new Runtime(d.store.root, mock(async (method) => {
     if (method === "thread/resume") return { thread: { status: { type: "idle" } } };
+    if (method === "thread/turns/list") return { data: [{ id: "saved-turn", status: "failed" }] };
     if (method === "thread/archive") { archived = true; return {}; }
     if (method === "turn/start") return { turn: { id: "recovery-turn" } };
     return {};
@@ -239,12 +241,44 @@ test("reconciliation resumes unloaded saved threads before verifying idle, witho
     const r = new Runtime(root, mock(async (method) => {
       calls.push(method);
       if (method === "thread/resume") { loaded = true; return { thread: { status: { type: "idle" } } }; }
+      if (method === "thread/turns/list") return { data: [{ id: "saved-turn", status: failed ? "failed" : "completed" }] };
       if (method === "thread/read") return { thread: { status: { type: loaded ? "idle" : "notLoaded" } } };
       return {};
     }));
     await r.reconcile("pending-thread", delivered);
-    expect(calls).toEqual(["thread/resume", "thread/read"]);
+    expect(calls).toEqual(["thread/resume", "thread/turns/list", "thread/read"]);
     expect(r.sessions.get("pending-thread")).toMatchObject({ status: failed ? "failed" : "idle", uncertainDelivery: false });
     expect(r.sessions.get("pending-thread")?.lastDeliveryId).toBe(delivered ? "saved-batch" : undefined);
   }
+});
+
+test("a missed terminal event is recovered from server history, while missing or unrelated outcomes require recovery", async () => {
+  const { done } = await import("../src/harness.ts");
+  for (const outcome of ["failed", "inProgress", "missing", "unrelated"] as const) {
+    const w = new World(), d = w.deps(); homes.push(d.store.root); const id = "lost-event-thread"; let archived = false, starts = 0;
+    writeFileSync(join(d.store.root, "sessions", id + ".json"), JSON.stringify({ id, name: "lost-event", cwd: d.store.root, instructions: "", status: "working", output: "partial", everStarted: true, turnId: "saved-turn" }));
+    const r = new Runtime(d.store.root, mock(async (method) => {
+      if (method === "thread/resume") return { thread: { status: { type: "idle" } } };
+      if (method === "thread/turns/list") return { data: outcome === "missing" ? [] : [{ id: outcome === "unrelated" ? "other-turn" : "saved-turn", status: outcome === "unrelated" ? "completed" : outcome }] };
+      if (method === "thread/archive") { archived = true; return {}; }
+      if (method === "turn/start") { starts++; return { turn: { id: "recovery-turn" } }; }
+      return {};
+    }));
+    d.store.saveLane({ key: "lost-event", threadId: id, cwd: d.store.root, brief: "fixture", status: "ready", createdAt: 1, lastActivityAt: 1, nudges: 0, log: [], final: { at: 1, text: "premature", evidence: ["fixture"] } });
+    d.sessions.status = (thread) => r.status(thread); d.sessions.close = (thread) => r.close(thread);
+    expect(await r.status(id)).toBe(outcome === "failed" ? "failed" : "recovery");
+    await expect(done(d, "lost-event")).rejects.toThrow("recover"); expect(archived).toBe(false); expect(starts).toBe(0);
+    await r.deliver(id, "inspect and recover explicitly", "new-instructions"); expect(starts).toBe(1);
+  }
+});
+
+test("duty preserves underscore and colon thread IDs without inbox aliasing", async () => {
+  const { send, dutyTick } = await import("../src/harness.ts");
+  const w = new World(), d = w.deps(); homes.push(d.store.root);
+  const underscore = w.addThread("thr_123", "working"), colon = w.addThread("thr:123", "working");
+  await send(d, "thr_123", "underscore work", "cli"); await send(d, "thr:123", "colon work", "cli");
+  expect(d.store.inboxThreads().sort()).toEqual(["thr:123", "thr_123"]);
+  underscore.status = "idle"; colon.status = "idle"; await dutyTick(d);
+  expect(underscore.received).toEqual(["underscore work"]); expect(colon.received).toEqual(["colon work"]);
+  expect(d.store.inboxThreads()).toEqual([]);
 });

@@ -283,8 +283,8 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
     }
     case "merge": {
       const method = one(a, "method") ?? "merge";
-      if (!["merge", "squash", "rebase"].includes(method)) throw new Refusal("--method must be merge, squash or rebase");
-      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true", method: method as "merge" | "squash" | "rebase" }));
+      if (method !== "merge") throw new Refusal("--method must be merge; reviewed-pair integration preserves both parents");
+      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true", method: "merge" }));
       return 0;
     }
     case "done":

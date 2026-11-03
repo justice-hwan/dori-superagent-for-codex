@@ -6,6 +6,7 @@ import { shq, spawnExec, type Exec } from "./process.ts";
 import { Sessions, type SessionRuntime, type AgentStatus } from "./sessions.ts";
 import { KEY_RE, Store, type HostLoad, type Lane, type Role } from "./store.ts";
 import { prepareReviewSnapshot } from "./review-snapshot.ts";
+import { integratePair, recoverIntegration, type Pair } from "./merge.ts";
 type MergeOutcome = "merged" | "no_receipt" | "review_block" | "no_checks" | "checks_red" | "checks_all_skipped";
 
 export { KEY_RE };
@@ -79,7 +80,7 @@ export function resolveTarget(d: Deps, target: string): string {
   throw new Refusal(`unknown target ${target}: not a thread id, role or open lane`);
 }
 
-const READY_TO_READ: readonly AgentStatus[] = ["idle", "done", "failed"];
+const READY_TO_READ: readonly AgentStatus[] = ["idle", "done", "failed", "recovery"];
 
 /** Delivers now when the thread can read; otherwise queues it for the duty loop (busy agents are never interrupted). */
 export async function send(d: Deps, target: string, text: string, from: string): Promise<"DELIVERED" | "QUEUED"> {
@@ -235,7 +236,7 @@ export async function done(d: Deps, key: string): Promise<void> {
   if (!unlockInbox) throw new Refusal(`lane ${key} delivery is busy; finish it before closing`);
   if (d.store.queued(lane.threadId).length) throw new Refusal(`lane ${key} has queued messages; deliver them before closing`);
   const st = await d.sessions.status(lane.threadId);
-  if (st === "working" || st === "blocked" || st === "failed") throw new Refusal(`lane ${key} thread is ${st}; let it finish or recover first`);
+  if (st === "working" || st === "blocked" || st === "failed" || st === "recovery") throw new Refusal(`lane ${key} thread is ${st}; let it finish or recover first`);
   if (st !== "gone") await d.sessions.close(lane.threadId);
   lane.status = "done";
   lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
@@ -274,7 +275,7 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
     try {
       const st = await d.sessions.status(observed.threadId);
       const now = d.now();
-      let action: "lost" | "failed" | "nudge" | "escalate" | undefined;
+      let action: "lost" | "failed" | "recovery" | "nudge" | "escalate" | undefined;
       let idleMin = 0;
       const lane = d.store.editLane(observed.key, (current) => {
         if (current.threadId !== observed.threadId || (current.status !== "working" && current.status !== "waiting")) return false;
@@ -284,11 +285,11 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
           action = "lost"; return;
         }
         if (st === "working") { current.lastActivityAt = now; return; }
-        if (st === "failed") {
+        if (st === "failed" || st === "recovery") {
           if (current.status === "waiting") return false;
           current.status = "waiting";
-          current.log.push({ at: now, kind: "report", text: "Codex turn failed; waiting for recovery instructions" });
-          action = "failed"; return;
+          current.log.push({ at: now, kind: "report", text: st === "failed" ? "Codex turn failed; waiting for recovery instructions" : "Codex turn outcome is unconfirmed; waiting for recovery instructions" });
+          action = st; return;
         }
         if (current.status === "waiting" || st === "blocked" || st === "unknown") return false;
         idleMin = (now - current.lastActivityAt) / 60_000;
@@ -304,6 +305,9 @@ export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
       } else if (action === "failed") {
         await tellLead(d, `[FAILED ${lane.key}] Codex turn failed; lane kept open for recovery`, "duty");
         events.push({ lane: lane.key, action: "failed" });
+      } else if (action === "recovery") {
+        await tellLead(d, `[RECOVERY ${lane.key}] latest turn outcome is unconfirmed; lane kept open`, "duty");
+        events.push({ lane: lane.key, action: "recovery" });
       } else if (action === "nudge") {
         await send(d, lane.key, prompt("nudge.md", { key: lane.key, minutes: String(Math.floor(idleMin)), dori: d.doriCmd }), "duty");
         events.push({ lane: lane.key, action: `nudge-${lane.nudges}` });
@@ -339,27 +343,27 @@ export async function headSha(d: Deps, pr: PrRef): Promise<string> {
   return String(out.headRefOid);
 }
 
-async function reviewTarget(d: Deps, pr: PrRef): Promise<{ head: string; base: string }> {
-  const out = JSON.parse(await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "headRefOid,baseRefOid"]));
-  if (!/^[0-9a-f]{40}$/.test(out.headRefOid) || !/^[0-9a-f]{40}$/.test(out.baseRefOid)) throw new Refusal("GitHub returned no full head/base SHA; review unconfirmed");
-  return { head: out.headRefOid, base: out.baseRefOid };
+async function reviewTarget(d: Deps, pr: PrRef): Promise<Pair> {
+  const out = JSON.parse(await gh(d, ["pr", "view", String(pr.number), "--repo", pr.repo, "--json", "headRefOid,baseRefOid,baseRefName,state,isDraft"]));
+  if (!/^[0-9a-f]{40}$/.test(out.headRefOid) || !/^[0-9a-f]{40}$/.test(out.baseRefOid) || typeof out.baseRefName !== "string" || !out.baseRefName || typeof out.state !== "string" || typeof out.isDraft !== "boolean") throw new Refusal("GitHub returned no complete head/base/branch identity; review unconfirmed");
+  return { head: out.headRefOid, base: out.baseRefOid, baseBranch: out.baseRefName, state: out.state, draft: out.isDraft };
 }
 
 /** Runs a fresh, non-interactive reviewer session pinned to the PR head and records its verdict as a receipt. */
 export async function review(d: Deps, prId: string, model?: string): Promise<{ verdict: "CLEAR" | "BLOCK"; sha: string; baseSha: string; reportPath: string }> {
   const pr = parsePr(prId);
-  const { head: sha, base: baseSha } = await reviewTarget(d, pr);
+  const { head: sha, base: baseSha, baseBranch } = await reviewTarget(d, pr);
   const snapshot = await (d.reviewSnapshot ?? prepareReviewSnapshot)(d.store.root, process.cwd(), pr.id, sha, baseSha);
   const text = prompt("review.md", { pr: pr.id, sha, base: baseSha, source: snapshot.cwd, diff: snapshot.diffPath, metadata: snapshot.metadataPath });
   const output = await d.sessions.review(text, snapshot.cwd, model);
   writeFileSync(snapshot.reportPath, output + "\n", { mode: 0o600 });
   const current = await reviewTarget(d, pr);
-  if (current.head !== sha || current.base !== baseSha) throw new Refusal("PR head or base changed during review; no receipt written");
+  if (current.head !== sha || current.base !== baseSha || current.baseBranch !== baseBranch) throw new Refusal("PR head or base changed during review; no receipt written");
   const verdicts = [...output.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
   if (!last) throw new Error("reviewer printed no VERDICT line; no receipt written");
   const verdict = last[1] as "CLEAR" | "BLOCK";
-  d.store.saveReceipt({ pr: pr.id, sha, baseSha, verdict, model: model ?? "default", at: d.now(), summary: output.trim().slice(-4000), reportPath: snapshot.reportPath });
+  d.store.saveReceipt({ pr: pr.id, sha, baseSha, baseBranch, verdict, model: model ?? "default", at: d.now(), summary: output.trim().slice(-4000), reportPath: snapshot.reportPath });
   return { verdict, sha, baseSha, reportPath: snapshot.reportPath };
 }
 
@@ -368,27 +372,43 @@ type Check = { name: string; bucket: string };
 /** Merge only when the exact current head has a CLEAR review receipt and every check passed. An empty check list is never green. */
 export async function mergeGate(d: Deps, prId: string, opts: { dryRun?: boolean; method?: "merge" | "squash" | "rebase" } = {}): Promise<string> {
   const pr = parsePr(prId);
-  const { head: sha, base } = await reviewTarget(d, pr);
-  const refused = await gateRefusal(d, pr, sha, base);
+  if (opts.method && opts.method !== "merge") throw new Refusal("MERGE_REFUSED only merge commits support reviewed-pair integration");
+  const unlock = d.store.lockMerge(pr.id);
+  if (!unlock) throw new Refusal("MERGE_REFUSED integration is already in progress");
+  try {
+  const pair = await reviewTarget(d, pr);
+  const readTarget = () => reviewTarget(d, pr);
+  const previous = await recoverIntegration(d, pr, pair, readTarget);
+  if (previous) return previous;
+  const { head: sha, base, baseBranch } = pair;
+  const refused = await gateRefusal(d, pr, sha, base, baseBranch);
   if (refused) {
     throw new Refusal(`MERGE_REFUSED ${refused[1]}`);
   }
   const current = await reviewTarget(d, pr);
-  if (current.head !== sha || current.base !== base) throw new Refusal("MERGE_REFUSED head or base changed while checking");
+  if (current.head !== sha || current.base !== base || current.baseBranch !== baseBranch || current.state !== "OPEN" || current.draft) throw new Refusal("MERGE_REFUSED head, base or PR state changed while checking");
   if (opts.dryRun) return `MERGE_OK ${pr.id} head=${sha} (dry run)`;
-  await gh(d, ["pr", "merge", String(pr.number), "--repo", pr.repo, `--${opts.method ?? "merge"}`, "--match-head-commit", sha]);
-  return `MERGED ${pr.id} head=${sha}`;
+  return integratePair(d, pr, pair, readTarget);
+  } finally { unlock(); }
 }
 
-async function gateRefusal(d: Deps, pr: PrRef, sha: string, base: string): Promise<[MergeOutcome, string] | undefined> {
+async function gateRefusal(d: Deps, pr: PrRef, sha: string, base: string, baseBranch: string): Promise<[MergeOutcome, string] | undefined> {
   const receipt = d.store.receipt(pr.id, sha);
   if (!receipt) return ["no_receipt", `no review receipt at head ${sha.slice(0, 12)} (run: dori-codex review ${pr.id})`];
-  if (receipt.baseSha !== base) return ["no_receipt", "target base changed; review this head/base pair again"];
+  if (receipt.pr !== pr.id || receipt.sha !== sha || receipt.baseSha !== base || receipt.baseBranch !== baseBranch) return ["no_receipt", "target repository or base changed; review this head/base pair again"];
   if (receipt.verdict !== "CLEAR") return ["review_block", `review at ${sha.slice(0, 12)} is ${receipt.verdict}`];
-  const checksRes = await d.exec("gh", ["pr", "checks", String(pr.number), "--repo", pr.repo, "--json", "name,bucket"]);
-  const checks: Check[] = checksRes.stdout.trim().startsWith("[") ? JSON.parse(checksRes.stdout) : [];
+  const checks: Check[] = [];
+  for (const endpoint of [`repos/${pr.repo}/commits/${sha}/check-runs?filter=latest&per_page=100`, `repos/${pr.repo}/commits/${sha}/status?per_page=100`]) {
+    const r = await d.exec("gh", ["api", endpoint, "--paginate", "--slurp"]);
+    if (r.code !== 0) return ["checks_red", "check command failed; status is unconfirmed"];
+    const pages = JSON.parse(r.stdout);
+    if (!Array.isArray(pages)) return ["checks_red", "invalid check response; status is unconfirmed"];
+    for (const page of pages) {
+      for (const c of page.check_runs ?? []) checks.push({ name: c.name, bucket: c.status !== "completed" ? "pending" : c.conclusion === "success" ? "pass" : c.conclusion === "skipped" || c.conclusion === "neutral" ? "skipping" : "fail" });
+      for (const s of page.statuses ?? []) checks.push({ name: s.context, bucket: s.state === "success" ? "pass" : s.state === "pending" ? "pending" : "fail" });
+    }
+  }
   if (checks.length === 0) return ["no_checks", "no checks reported: an empty check list is never green"];
-  if (checksRes.code !== 0) return ["checks_red", "check command failed; status is unconfirmed"];
   const bad = checks.filter((c) => c.bucket !== "pass" && c.bucket !== "skipping");
   if (bad.length > 0) return ["checks_red", `checks not green: ${bad.map((c) => `${c.name}=${c.bucket}`).join(", ")}`];
   if (!checks.some((c) => c.bucket === "pass")) return ["checks_all_skipped", "every check was skipped"];
