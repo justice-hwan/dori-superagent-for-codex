@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync, renameSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { acquireFileLease } from "./lock.ts";
-import { MessengerJournal, sendMessenger, type MessengerConfig, type MessengerOrigin } from "./messenger.ts";
+import { MessengerJournal, sendMessenger, type MessengerConfig, type MessengerOrigin, type Http, type Clock } from "./messenger.ts";
 import type { Completion, TaskOrigin } from "./store.ts";
 import { flushInbox, Refusal, type Deps } from "./harness.ts";
 
@@ -87,7 +87,7 @@ export function acknowledgeNotice(d: Deps, id: string): void {
 }
 
 /** Explicit configured delivery only. External origins never fall back to the Codex conversation. */
-export async function deliverExternalNotice(d: Deps, id: string, config: MessengerConfig & { account: string; workspace?: string }): Promise<string> {
+export async function deliverExternalNotice(d: Deps, id: string, config: MessengerConfig & { account: string; workspace?: string }, http?: Http, clock?: Clock): Promise<string> {
   const lock = lease(d);
   try {
     const j = read(d), n = j.notices.find(x => x.id === id);
@@ -95,7 +95,7 @@ export async function deliverExternalNotice(d: Deps, id: string, config: Messeng
     if (!n?.origin || n.route?.kind !== "messenger" || JSON.stringify(n.route.origin) !== JSON.stringify(n.origin)) throw new Refusal("notice has no captured messenger origin");
     if (config.platform !== n.origin.platform || config.account !== n.origin.account || config.workspace !== n.origin.workspace) throw new Refusal("configured messenger account does not match the captured origin");
     const text = `${n.task} r${n.revision}: ${n.summary}\n${n.decision ? `정할 것: ${n.decision}\n` : ""}${n.details.join("\n")}`;
-    const receipt = await new MessengerJournal(d.store.root).reply(n.instance, n.id, text, origin => sendMessenger({ ...config, ...origin, text }));
+    const receipt = await new MessengerJournal(d.store.root).reply(n.instance, n.id, text, origin => sendMessenger({ ...config, ...origin, text }, http, clock));
     if (receipt.state !== "sent" || !receipt.messageId) throw new Refusal("external delivery unconfirmed");
     n.externalReceipt = receipt.messageId; save(d, j); return receipt.messageId;
   } finally { lock.release(); }

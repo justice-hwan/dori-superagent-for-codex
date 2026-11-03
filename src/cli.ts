@@ -14,6 +14,7 @@ import { MessengerJournal, sendMessenger, type MessengerConfig, type MessengerOr
 import { connection, readConnection, type Connection } from "./connection.ts";
 import { acknowledge, findTasks, pivot, taskDocument, taskFor, revisionOf } from "./tasks.ts";
 import { acknowledgeNotice, deliverExternalNotice, flushNotices, notices, recordNotice } from "./notifications.ts";
+import { MessengerRunner, readRunnerConfig, requestRunnerStop, runnerExample, runnerStatus } from "./messenger-runner.ts";
 
 const USAGE = `dori-codex - a local multi-session harness on Codex app-server
 
@@ -24,6 +25,9 @@ const USAGE = `dori-codex - a local multi-session harness on Codex app-server
   dori-codex pivot KEY --text T [--expected-revision N]   revise and steer running owned work
   dori-codex ack KEY --instance THREAD --revision N                  worker acknowledges current direction
   dori-codex messenger status | bind KEY --origin FILE | reply KEY --config FILE --id ID --text T
+  dori-codex messenger config example PLATFORM | check --config /absolute/FILE
+  dori-codex messenger start --config /absolute/FILE    foreground inbound + automatic completion replies
+  dori-codex messenger stop RUNNER_ID                   cooperative stop (no shared-runtime signals)
   dori-codex messenger report NOTICE --config FILE | reconcile ID --delivered true|false [--message ID]
   dori-codex notifications list | flush | ack ID    compact durable conversation reports
   dori-codex notify KEY --kind decision|failure --text T [--decision Q]
@@ -223,8 +227,27 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       return 0;
     }
     case "messenger": {
+      if (x === "config") {
+        if (a.pos[2] === "example") console.log(JSON.stringify(runnerExample(need(a.pos[3], "platform")), null, 2));
+        else if (a.pos[2] === "check") {
+          const c = readRunnerConfig(need(one(a, "config"), "--config FILE"));
+          console.log(c.enabled ? `CONFIG_OK ${c.platform} (local validation only; no provider IO)` : "MESSENGER_DISABLED");
+        } else throw new Refusal("use messenger config example PLATFORM or check --config FILE");
+        return 0;
+      }
+      if (x === "start") {
+        const config = readRunnerConfig(need(one(a, "config"), "--config FILE"));
+        if (!config.enabled) { console.log("MESSENGER_DISABLED"); return 0; }
+        const runner = new MessengerRunner(d, config);
+        const stop = () => { runner.requestStop(); };
+        process.on("SIGINT", stop); process.on("SIGTERM", stop);
+        try { console.log(`MESSENGER_STARTING ${config.platform} id=${runner.state.id}`); await runner.run(); }
+        finally { process.off("SIGINT", stop); process.off("SIGTERM", stop); }
+        return 0;
+      }
+      if (x === "stop") { requestRunnerStop(d.store.root, need(a.pos[2], "runner ID")); console.log("MESSENGER_STOP_REQUESTED (wait for status stopped)"); return 0; }
       const journal = new MessengerJournal(d.store.root);
-      if (x === undefined || x === "status") { console.log(JSON.stringify({ bindings: journal.bindings(), inbound: journal.inbound(), outgoing: journal.outgoing() }, null, 2)); return 0; }
+      if (x === undefined || x === "status") { console.log(JSON.stringify({ runners: runnerStatus(d.store.root), bindings: journal.bindings(), inbound: journal.inbound(), outgoing: journal.outgoing() }, null, 2)); return 0; }
       if (x === "bind") {
         const lane = taskFor(d, need(a.pos[2], "task selector")), origin = JSON.parse(readFileSync(need(one(a, "origin"), "--origin FILE"), "utf8"));
         // New tasks already capture their route at allocation. This command can
@@ -244,7 +267,7 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
         }
         return 0;
       }
-      throw new Refusal("use messenger status, bind KEY --origin FILE, reply KEY --config FILE --id ID, report NOTICE --config FILE, reconcile ID");
+      throw new Refusal("use messenger config, start --config FILE, stop RUNNER_ID, status, bind KEY --origin FILE, reply KEY --config FILE --id ID, report NOTICE --config FILE, reconcile ID");
     }
     case "task": {
       if (x === "find" || x === "list" || x === undefined) console.log(JSON.stringify(findTasks(d, a.pos.slice(2).join(" ")).map(l => ({ key: l.key, title: l.title, threadId: l.threadId, status: l.status, revision: revisionOf(l), direction: l.direction, latestInstruction: l.instructions?.at(-1) })), null, 2));

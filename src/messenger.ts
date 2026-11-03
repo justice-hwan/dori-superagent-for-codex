@@ -14,12 +14,13 @@ export type HttpRequest = {
   readonly url: string;
   readonly headers?: Readonly<Record<string, string>>;
   readonly body?: string | FormData | Uint8Array<ArrayBuffer>;
+  readonly signal?: AbortSignal;
 };
 export type HttpResponse = { readonly status: number; readonly headers: Readonly<Record<string, string>>; readonly body: string };
 export type Http = (req: HttpRequest) => Promise<HttpResponse>;
 
 export const fetchHttp: Http = async (req) => {
-  const res = await fetch(req.url, { method: req.method, headers: req.headers, body: req.body, signal: AbortSignal.timeout(30_000), redirect: "error" });
+  const res = await fetch(req.url, { method: req.method, headers: req.headers, body: req.body, signal: req.signal ? AbortSignal.any([req.signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000), redirect: "error" });
   const headers: Record<string, string> = {};
   res.headers.forEach((v, k) => {
     headers[k.toLowerCase()] = v;
@@ -539,7 +540,7 @@ export async function pollSlackInbound(slack: Slack, ledger: ThreadLedger, opts:
   const view = await slack.call("subscriptions.thread.getView", { limit: opts.threadsViewLimit ?? 20 }) as { threads?: { root_msg?: SlackMessage; unread_replies?: SlackMessage[] }[] };
   for (const thread of view.threads ?? []) {
     const channel = thread.root_msg?.channel; if (!channel) continue;
-    for (const m of thread.unread_replies ?? []) if (m.ts && fromOthers(m)) add({ source: "threads-view", channel, ts: m.ts, threadTs: m.thread_ts, user: m.user, text: m.text });
+    for (const m of thread.unread_replies ?? []) if (m.ts && fromOthers(m)) add({ source: "threads-view", channel, ts: m.ts, threadTs: m.thread_ts ?? thread.root_msg?.ts, user: m.user, text: m.text });
   }
   for (const thread of await ledger.list()) {
     const res = await slack.call("conversations.replies", { channel: thread.channel, ts: thread.rootTs, oldest: thread.seenTs, inclusive: false, limit: 50 }) as { messages?: SlackMessage[] };

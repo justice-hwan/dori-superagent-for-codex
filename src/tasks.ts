@@ -23,9 +23,10 @@ export function taskFor(d: Deps, selector: string, includeClosed = false): Lane 
   if (candidates.length !== 1) throw new Refusal(`task selection ${candidates.length ? "is ambiguous" : "did not match"}; use a lane key${candidates.length ? `: ${candidates.map(l => l.key).join(", ")}` : ""}`);
   return candidates[0]!;
 }
-export async function pivot(d: Deps, selector: string, text: string, expectedRevision?: number, sourceEvent?: string): Promise<Lane> {
+export async function pivot(d: Deps, selector: string, text: string, expectedRevision?: number, sourceEvent?: string, expectedInstance?: string): Promise<Lane> {
   if (!text.trim()) throw new Refusal("pivot requires the new direction");
   const selected = taskFor(d, selector);
+  if (expectedInstance !== undefined && selected.threadId !== expectedInstance) throw new Refusal("the exact bound task instance changed before pivot");
   const unlock = d.store.lockLaneMutation(selected.key);
   if (!unlock) throw new Refusal("task is being updated; refresh and retry");
   let lane: Lane;

@@ -54,8 +54,13 @@ See [upstream messenger support](messengers.md). Slack, Discord and Telegram use
 ```sh
 dori-codex start fix-login --brief brief.md --origin origin.json
 dori-codex messenger status
+dori-codex messenger config example telegram
+dori-codex messenger start --config /private/path/telegram.json
+dori-codex messenger stop RUNNER_ID
 dori-codex messenger reply fix-login --config explicit-config.json --id stable-delivery-id --text 'Result'
 dori-codex messenger report NOTICE_ID --config explicit-config.json
 ```
 
-Only explicit reply/report commands read the explicitly supplied configuration file and enable transport. Configuration must identify the same platform/account/workspace as the original task. Credential values are never stored in the task/outbox journal. No default token lookup, listener, presence session or message fan-out is enabled. Platform registration, authenticated event ingestion and account setup remain explicit deployment work; no live platform was connected during implementation.
+An explicitly started foreground runner supplies authenticated inbound events and automatically delivers committed completion notices for its configured account. Manual `reply`/`report` remain available for explicit operations. `up` alone does not enable a messenger. See the platform setup, cursor and stop details in [messengers.md](messengers.md).
+
+Only explicit messenger start/check/reply/report commands read their supplied configuration file; start/reply/report can enable transport. Configuration must identify the same platform/account/workspace as the original task. Credential values are never stored in the task/outbox journal. No default token lookup, listener, presence session or message fan-out is enabled. Platform registration and account setup remain explicit deployment work; no live platform was connected during implementation.

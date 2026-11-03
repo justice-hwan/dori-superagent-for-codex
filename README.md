@@ -20,7 +20,7 @@ flowchart LR
 
 Attach an existing conversation with `up --connect ws+unix:///absolute/socket --lead THREAD --split`. The separate internal work lead receives lane chatter, finds related work, steers running tasks when the owner changes direction, and verifies completion. The conversation receives compact completion batches and important decisions. Task revisions and explicit worker acknowledgements keep stale results from completing newer requests. Pages remains the dashboard, with task results organized as 요약 / 정할 것 / 상세.
 
-See [split-lead operations](docs/split-lead.md) and [upstream messenger support](docs/messengers.md). Optional Slack, Discord and Telegram behavior is adapted from upstream and remains disabled until explicitly configured; no messenger connection starts with Dori.
+See [split-lead operations](docs/split-lead.md) and [upstream messenger support](docs/messengers.md). Optional Slack, Discord and Telegram behavior is adapted from upstream and remains disabled until explicitly configured; no messenger connection starts with Dori. `messenger start --config /absolute/FILE` explicitly runs authenticated owner inbound admission and automatic replies to each completed task's original route; `messenger stop RUNNER_ID` requests cooperative shutdown.
 
 ## Install and use
 
