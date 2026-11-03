@@ -76,20 +76,41 @@ test("a historical confirmed integration cannot bypass a retargeted PR's new rec
   } finally { rmSync(d.store.root, { recursive: true, force: true }); }
 });
 
-test("review snapshots reject absolute, relative and transitive symlink escapes, preserving contained links", async () => {
-  const { symlinkSync } = await import("node:fs");
+test("review snapshots preserve symlink target blobs as inert files with original mode metadata", async () => {
+  const { symlinkSync, lstatSync } = await import("node:fs");
   for (const variant of ["absolute", "relative", "chained", "contained"] as const) {
     const root = mkdtempSync(join(tmpdir(), "dori-symlink-review-"));
     const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
     try {
       git("init", "-q"); writeFileSync(join(root, "inside.txt"), "frozen marker\n"); git("add", "."); git("commit", "-qm", "base"); const base = git("rev-parse", "HEAD");
-      symlinkSync(variant === "absolute" ? "/tmp/unreviewed-source" : variant === "relative" ? "../../outside" : variant === "chained" ? "directory-link/../outside" : "inside.txt", join(root, "source.ts"));
+      const link = variant === "absolute" ? "/tmp/unreviewed-source" : variant === "relative" ? "../../outside" : variant === "chained" ? "directory-link/../outside" : "inside.txt";
+      symlinkSync(link, join(root, "source.ts"));
       if (variant === "chained") symlinkSync(".", join(root, "directory-link"));
       git("add", "."); git("commit", "-qm", "links"); const head = git("rev-parse", "HEAD");
-      if (variant === "contained") {
-        const snapshot = await prepareReviewSnapshot(join(root, "state"), root, "o/r#1", head, base);
-        expect(readFileSync(join(snapshot.cwd, "source.ts"), "utf8")).toBe("frozen marker\n");
-      } else await expect(prepareReviewSnapshot(join(root, "state"), root, "o/r#1", head, base)).rejects.toThrow(/symlink/);
+      const snapshot = await prepareReviewSnapshot(join(root, "state"), root, "o/r#1", head, base);
+      expect(lstatSync(join(snapshot.cwd, "source.ts")).isSymbolicLink()).toBe(false);
+      expect(readFileSync(join(snapshot.cwd, "source.ts"), "utf8")).toBe(link);
+      expect(readFileSync(join(snapshot.cwd, "inside.txt"), "utf8")).toBe("frozen marker\n");
+      expect(JSON.parse(readFileSync(snapshot.metadataPath, "utf8")).symlinks).toContainEqual({ path: "source.ts", target: link, mode: "120000", representation: "inert target text" });
     } finally { rmSync(root, { recursive: true, force: true }); }
   }
+});
+
+test("case-alias symlink traversal cannot read mutable host files through a frozen snapshot", async () => {
+  const { symlinkSync, mkdirSync, lstatSync } = await import("node:fs");
+  const root = mkdtempSync(join(tmpdir(), "dori-case-alias-review-")), home = join(root, "state");
+  const git = (...args: string[]) => execFileSync("git", ["-C", root, "-c", "user.name=fixture", "-c", "user.email=fixture@example.com", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+  try {
+    git("init", "-q"); writeFileSync(join(root, "base.txt"), "base\n"); git("add", "."); git("commit", "-qm", "base"); const base = git("rev-parse", "HEAD");
+    const link = "a/a/a/../../../private-dummy.txt";
+    symlinkSync(".", join(root, "A")); symlinkSync(link, join(root, "AGENTS.md"));
+    git("add", "."); git("commit", "-qm", "case alias traversal"); const head = git("rev-parse", "HEAD");
+    mkdirSync(home); writeFileSync(join(home, "private-dummy.txt"), "SYNTHETIC_PRIVATE_MARKER_ONE");
+    const snapshot = await prepareReviewSnapshot(home, root, "o/r#1", head, base);
+    expect(lstatSync(join(snapshot.cwd, "AGENTS.md")).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(snapshot.cwd, "AGENTS.md"), "utf8")).toBe(link);
+    writeFileSync(join(home, "private-dummy.txt"), "SYNTHETIC_PRIVATE_MARKER_TWO");
+    expect(readFileSync(join(snapshot.cwd, "AGENTS.md"), "utf8")).toBe(link);
+    expect(readFileSync(snapshot.metadataPath, "utf8")).not.toContain("SYNTHETIC_PRIVATE_MARKER");
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
