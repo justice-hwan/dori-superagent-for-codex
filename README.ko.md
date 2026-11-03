@@ -76,3 +76,5 @@ bun run smoke:live
 일반 테스트는 가짜 app-server와 격리된 상태 디렉터리를 사용합니다. 실제 모델 테스트는 테스트 세션을 보관 처리하고 실행기를 종료합니다.
 
 upstream 기준 커밋은 `248c291319a1e45db061f1b3eae1cce9640084f7`입니다. 최신 변경은 `git fetch upstream` 후 수동으로 통합하고, 실행기·통신 경계 검사와 전체 테스트를 통과시킵니다. [전체 명령·설계](README.md), [이전 버전과의 차이](docs/migration.md)를 참고하세요.
+
+Duty pause: `dori-codex duty stop --text maintenance`, `dori-codex duty status`, `dori-codex duty resume`. Integrated upstream SHA is tracked in `.upstream.json`.

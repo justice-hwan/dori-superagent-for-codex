@@ -210,6 +210,9 @@ function failureDetail(e: unknown): string {
 
 /** One proactive pass: flush inboxes of threads that became idle, nudge silent lanes, escalate, detect lost threads. */
 export async function dutyTick(d: Deps): Promise<DutyEvent[]> {
+  // Kill switch: a stopped duty loop delivers, nudges and escalates nothing. Queued messages wait for the resume.
+  const stop = d.store.stop("duty");
+  if (stop) return [{ action: "stopped", detail: stop.reason }];
   const events: DutyEvent[] = [];
   for (const threadId of d.store.inboxThreads()) {
     try {

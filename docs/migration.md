@@ -2,7 +2,9 @@
 
 Upstream: https://github.com/sisyphuslabs/dori-superagent
 
-Baseline: `248c291319a1e45db061f1b3eae1cce9640084f7`.
+Original baseline: `248c291319a1e45db061f1b3eae1cce9640084f7`. Integrated upstream: `44a33bbdff882afa51d0594a75166dc9ac9d7254` (recorded in `.upstream.json`).
+
+Upstream #53 duty stop/resume/status is adapted to Codex threads. The old terminal-only startup change (#51) and terminal-wrapper tests (#55) remain excluded with the removed adapter; no legacy connector or dependency is restored.
 
 The preserved components are the lane registry, evidence-required READY, review receipts, exact-head merge gate, inbox batching, duty cadence and bounded backlog loop. The terminal adapter is replaced by a persistent Codex JSON-RPC client and a private local runtime. Threads are identified by Codex IDs. The CLI is named `dori-codex` and state defaults to `~/.dori-codex`.
 

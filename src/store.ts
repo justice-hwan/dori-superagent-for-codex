@@ -82,7 +82,7 @@ const checkedId = (id: string): string => {
 
 export class Store {
   constructor(readonly root: string = process.env["DORI_HOME"] ?? join(homedir(), ".dori-codex")) {
-    for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "sessions"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
+    for (const d of ["lanes", "inbox", "briefs", "receipts", "backlog", "loop/runs", "sessions", "duty"]) mkdirSync(join(root, d), { recursive: true, mode: 0o700 });
   }
 
   private readJson<T>(path: string): T | undefined {
@@ -236,16 +236,16 @@ export class Store {
     return join(this.root, "loop", name);
   }
 
-  stop(): { at: number; reason: string } | undefined {
-    return this.readJson(this.loopPath("stop"));
+  stop(of: "loop" | "duty" = "loop"): { at: number; reason: string } | undefined {
+    return this.readJson(join(this.root, of, "stop"));
   }
 
-  setStop(at: number, reason: string): void {
-    this.writeJson(this.loopPath("stop"), { at, reason });
+  setStop(at: number, reason: string, of: "loop" | "duty" = "loop"): void {
+    this.writeJson(join(this.root, of, "stop"), { at, reason });
   }
 
-  clearStop(): void {
-    rmSync(this.loopPath("stop"), { force: true });
+  clearStop(of: "loop" | "duty" = "loop"): void {
+    rmSync(join(this.root, of, "stop"), { force: true });
   }
 
   lastRun(): LoopRun | undefined {

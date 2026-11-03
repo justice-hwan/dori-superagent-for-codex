@@ -114,3 +114,5 @@ git merge --no-commit upstream/main
 ```
 
 Baseline: upstream `248c291319a1e45db061f1b3eae1cce9640084f7`. Keep the original MIT license and attribution. Upstream integrations must pass `check:boundaries` before adoption. See [migration notes](docs/migration.md).
+
+Duty pause: `dori-codex duty stop --text maintenance`, `dori-codex duty status`, `dori-codex duty resume`. Integrated upstream SHA is tracked in `.upstream.json`.

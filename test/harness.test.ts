@@ -160,6 +160,37 @@ describe("duty loop", () => {
     expect(lines[0]).toContain("Codex exploded");
   });
 
+  test("kill switch: a stopped duty loop flushes, nudges and escalates nothing; resume delivers what was held", async () => {
+    const { w, d, lead, brief } = setup();
+    const lane = await startLane(d, "quiet", brief);
+    w.threads.get(lane.threadId)!.status = "idle";
+    lead.status = "working";
+    expect(await send(d, "lead", "held note", "cli")).toBe("QUEUED");
+    lead.status = "idle";
+    lead.received.length = 0;
+    w.clock = lane.createdAt + 40 * 60_000;
+    const lines: string[] = [];
+    const log = console.log;
+    console.log = (...a: unknown[]) => void lines.push(a.join(" "));
+    try {
+      expect(await main(["duty", "stop", "--text", "maintenance"], d)).toBe(0);
+      expect(await main(["duty", "--once"], d)).toBe(0);
+      expect(await main(["duty", "status"], d)).toBe(0);
+    } finally {
+      console.log = log;
+    }
+    expect(lines).toEqual(["DUTY STOPPED", "DUTY stopped: maintenance", "stopped: maintenance"]);
+    expect(lead.received).toEqual([]);
+    expect(d.store.lane("quiet")!.nudges).toBe(0);
+    expect(d.store.stop()).toBeUndefined();
+
+    await main(["duty", "resume"], d);
+    const events = await dutyTick(d);
+    expect(events).toContainEqual({ thread: "w1:p1", action: "flushed" });
+    expect(events).toContainEqual({ lane: "quiet", action: "nudge-1" });
+    expect(lead.received).toEqual(["held note"]);
+  });
+
   test("a working lane counts as activity; a vanished thread is reported LOST", async () => {
     const { w, d, lead, brief } = setup();
     const lane = await startLane(d, "busy", brief);
