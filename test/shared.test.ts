@@ -10,7 +10,8 @@ import { ensureRuntime } from "../src/daemon.ts";
 import { Store } from "../src/store.ts";
 import { report, send, flushInbox, type Deps } from "../src/harness.ts";
 
-type NativeTurn = { id: string; status: string; items: { type: string; id: string; clientId: string | null }[] };
+type NativeItem = { type: string; id: string; clientId?: string | null; text?: string; phase?: string };
+type NativeTurn = { id: string; status: string; items: NativeItem[] };
 type NativeThread = { id: string; name: string; status: { type: string; activeFlags?: string[] }; turns: NativeTurn[] };
 class FakeSharedServer {
   readonly home = mkdtempSync(join(tmpdir(), "dori-shared-"));
@@ -314,6 +315,25 @@ test("exact persisted terminal outcomes release owned turn markers, including ru
   }
 });
 
+test("historical owned terminal survives a newer native terminal and reload without stale cleanup", async () => {
+  for (const outcome of ["completed", "failed", "interrupted"]) {
+    const { fake, runtime } = await setup();
+    const id = await runtime.create("historical-owned", fake.home, "fixture"); await runtime.deliver(id, "work", `historical-${outcome}`);
+    const t = fake.threads.get(id)!, own = t.turns[0]!; own.status = outcome;
+    t.turns.unshift({ id: "native-later-terminal", status: outcome === "completed" ? "failed" : "completed", items: [{ type: "userMessage", id: "native-later-message", clientId: "native-later-client" }] });
+    t.status = { type: "idle" }; // Both terminal notifications were missed.
+    await runtime.codex.disconnect();
+    const reloaded = new Runtime(fake.home, new Codex(fake.selected, 250), 1000, 40);
+    fixtures.find(f => f.runtime === runtime)!.runtime = reloaded;
+    const expected = outcome === "completed" ? "done" : outcome === "failed" ? "failed" : "idle";
+    expect(await reloaded.status(id)).toBe(expected); expect(await reloaded.status(id)).toBe(expected);
+    expect(reloaded.sessions.get(id)).toMatchObject({ lastTurnId: own.id, lastTurnStatus: outcome });
+    expect(reloaded.sessions.get(id)?.ownedTurnId).toBeUndefined();
+    await reloaded.shutdown(); expect(fake.count("turn/interrupt")).toBe(0);
+    expect(t.turns[0]?.id).toBe("native-later-terminal");
+  }
+});
+
 test("turn/start racing a native turn accepts input without claiming or interrupting native creation", async () => {
   const { fake, runtime } = await setup();
   const id = await runtime.create("native-race", fake.home, "fixture");
@@ -401,13 +421,90 @@ test("shared successful review survives completed then idle notifications", asyn
     ws.send(JSON.stringify({ id: m.id, result: { turn } })); fake.event("turn/started", { threadId: t.id, turn });
     setTimeout(() => {
       turn.status = "completed"; t.status = { type: "idle" };
-      fake.event("item/completed", { threadId: t.id, turnId: turn.id, item: { type: "agentMessage", text: "VERDICT: CLEAR", phase: "final_answer" } });
+      const final = { type: "agentMessage", id: "review-final", text: "VERDICT: CLEAR", phase: "final_answer" }; turn.items.push(final);
+      fake.event("item/completed", { threadId: t.id, turnId: turn.id, item: final });
       fake.event("turn/completed", { threadId: t.id, turn }); fake.event("thread/status/changed", { threadId: t.id, status: { type: "idle" } });
     }, 10);
     return true;
   };
   expect(await runtime.review("review", fake.home)).toBe("VERDICT: CLEAR");
   expect([...runtime.sessions.values()].find(s => s.name === "review")).toMatchObject({ lastTurnStatus: "completed", closed: true });
+});
+
+test("a raced native-created review cannot produce a receipt or archive native work", async () => {
+  const { fake, runtime } = await setup();
+  let raced = false;
+  fake.hook = m => {
+    if (m.method !== "turn/start" || raced) return false;
+    raced = true; const t = fake.thread(m.params.threadId, "native-review-race"), turn = t.turns[0]!;
+    turn.items.push({ type: "agentMessage", id: "native-verdict", text: "VERDICT: CLEAR", phase: "final_answer" });
+    return false; // Native start appends Dori's input, preserving the native first message.
+  };
+  await expect(runtime.review("fresh independent review", fake.home)).rejects.toThrow("not proven newly created");
+  const s = [...runtime.sessions.values()].find(s => s.name === "review")!;
+  expect(s.acceptedDelivery).toMatchObject({ turnId: "native-review-race", created: false });
+  expect(s.closed).not.toBe(true); expect(fake.count("thread/archive")).toBe(0);
+  await runtime.shutdown(); expect(fake.threads.get(s.id)?.status.type).toBe("active"); expect(fake.count("turn/interrupt")).toBe(0);
+});
+
+test("shared review returns only its exact turn's verdict when newer native work emits another verdict", async () => {
+  const { fake, runtime } = await setup();
+  fake.hook = (m, ws) => {
+    if (m.method !== "turn/start") return false;
+    const t = fake.thread(m.params.threadId, "genuine-review-turn"), own = t.turns[0]!;
+    own.items[0]!.clientId = m.params.clientUserMessageId;
+    ws.send(JSON.stringify({ id: m.id, result: { turn: own } })); fake.event("turn/started", { threadId: t.id, turn: own });
+    setTimeout(() => {
+      const ownFinal = { type: "agentMessage", id: "own-block-verdict", text: "VERDICT: BLOCK", phase: "final_answer" };
+      own.status = "completed"; own.items.push(ownFinal);
+      fake.event("item/completed", { threadId: t.id, turnId: own.id, item: ownFinal }); fake.event("turn/completed", { threadId: t.id, turn: own });
+      const native: NativeTurn = { id: "unrelated-native-after-review", status: "completed", items: [{ type: "userMessage", id: "native-after-input", clientId: "native-after-client" }, { type: "agentMessage", id: "native-clear-verdict", text: "VERDICT: CLEAR", phase: "final_answer" }] };
+      t.turns.unshift(native); t.status = { type: "idle" };
+      fake.event("turn/started", { threadId: t.id, turn: { ...native, status: "inProgress" } });
+      fake.event("item/completed", { threadId: t.id, turnId: native.id, item: native.items[1] }); fake.event("turn/completed", { threadId: t.id, turn: native });
+    }, 10);
+    return true;
+  };
+  expect(await runtime.review("review own exact turn", fake.home)).toBe("VERDICT: BLOCK");
+  const s = [...runtime.sessions.values()].find(s => s.name === "review")!;
+  expect(s.output).toBe("VERDICT: CLEAR"); // Global cached output was unrelated and must not be used.
+  expect(s.acceptedDelivery).toMatchObject({ turnId: "genuine-review-turn", created: true });
+  expect(s.closed).not.toBe(true); expect(fake.count("thread/archive")).toBe(0);
+});
+
+test("rapid genuine review completion before creation proof still binds persisted provenance and output", async () => {
+  const { fake, runtime } = await setup();
+  fake.hook = (m, ws) => {
+    if (m.method !== "turn/start") return false;
+    const t = fake.thread(m.params.threadId, "rapid-review-turn"), turn = t.turns[0]!;
+    turn.items[0]!.clientId = m.params.clientUserMessageId;
+    const final = { type: "agentMessage", id: "rapid-final", text: "VERDICT: CLEAR", phase: "final_answer" }; turn.items.push(final);
+    turn.status = "completed"; t.status = { type: "idle" };
+    fake.event("turn/started", { threadId: t.id, turn: { ...turn, status: "inProgress" } });
+    fake.event("item/completed", { threadId: t.id, turnId: turn.id, item: final }); fake.event("turn/completed", { threadId: t.id, turn });
+    fake.event("thread/status/changed", { threadId: t.id, status: { type: "idle" } });
+    ws.send(JSON.stringify({ id: m.id, result: { turn } })); return true;
+  };
+  expect(await runtime.review("rapid exact review", fake.home)).toBe("VERDICT: CLEAR");
+  const s = [...runtime.sessions.values()].find(s => s.name === "review")!;
+  expect(s.acceptedDelivery).toMatchObject({ turnId: "rapid-review-turn", created: true });
+  expect(s.ownedTurnId).toBeUndefined(); expect(s.pendingOwnership).toBeUndefined(); expect(s.closed).toBe(true);
+});
+
+test("completion while first-message proof is in flight retains review creation evidence", async () => {
+  const { fake, runtime } = await setup(); let completed = false;
+  fake.hook = (m, ws) => {
+    if (m.method !== "thread/items/list" || completed) return false;
+    completed = true; const t = fake.threads.get(m.params.threadId)!, turn = t.turns[0]!;
+    const final = { type: "agentMessage", id: "proof-inflight-final", text: "VERDICT: CLEAR", phase: "final_answer" };
+    turn.items.push(final); turn.status = "completed"; t.status = { type: "idle" };
+    fake.event("item/completed", { threadId: t.id, turnId: turn.id, item: final }); fake.event("turn/completed", { threadId: t.id, turn });
+    ws.send(JSON.stringify({ id: m.id, result: { data: turn.items.map(item => ({ turnId: turn.id, item })), nextCursor: null } }));
+    return true;
+  };
+  expect(await runtime.review("review during proof", fake.home)).toBe("VERDICT: CLEAR");
+  const s = [...runtime.sessions.values()].find(s => s.name === "review")!;
+  expect(s.acceptedDelivery?.created).toBe(true); expect(s.ownedTurnId).toBeUndefined(); expect(s.closed).toBe(true);
 });
 
 test("shared failed and completed terminal outcomes survive later idle notifications", async () => {
