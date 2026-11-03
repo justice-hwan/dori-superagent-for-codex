@@ -93,7 +93,7 @@ export class Runtime {
     const status = r.thread?.status;
     // A resume never starts a model turn. Unknown server states remain unsendable.
     if ((this.revisions.get(s.id) ?? 0) === revision) {
-      s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? "working" : status?.type === "idle" ? "idle" : "unknown";
+      s.status = s.uncertainDelivery ? "unknown" : status?.type === "active" ? "working" : status?.type === "idle" ? s.lastTurnStatus === "failed" ? "failed" : "idle" : "unknown";
     }
     this.loaded.add(s.id); this.save(s);
   }
@@ -175,13 +175,18 @@ export class Runtime {
 
   async reconcile(id: string, delivered: boolean): Promise<void> {
     const s = this.owned(id);
+    if (this.busy.has(id) || this.closing.has(id) || this.interrupting.has(id)) throw new Error("thread operation in progress; reconcile after it finishes");
     if (!s.uncertainDelivery) throw new Error("thread has no uncertain delivery");
+    this.busy.add(id);
+    try {
+    await this.resume(s);
     const revision = this.revisions.get(id) ?? 0;
     const r = await this.codex.request("thread/read", { threadId: id, includeTurns: false });
     if ((this.revisions.get(id) ?? 0) !== revision) throw new Error("thread state changed during reconciliation; inspect it again");
     if (r.thread?.status?.type !== "idle") throw new Error("thread must be idle before reconciling delivery");
     if (delivered) s.lastDeliveryId = s.pendingDeliveryId;
-    s.pendingDeliveryId = undefined; s.uncertainDelivery = false; s.status = "idle"; this.save(s);
+    s.pendingDeliveryId = undefined; s.uncertainDelivery = false; s.status = s.lastTurnStatus === "failed" ? "failed" : "idle"; this.save(s);
+    } finally { this.busy.delete(id); }
   }
 
   async answer(id: string, result: unknown): Promise<void> {

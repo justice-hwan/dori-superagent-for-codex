@@ -19,6 +19,7 @@ test("crash before turn/start acceptance preserves uncertainty and never resubmi
     return {};
   }));
   const id = await r.create("sample", root, "fixture"); void r.deliver(id, "effectful task", "stable-batch"); await Bun.sleep(1);
+  await expect(r.reconcile(id, false)).rejects.toThrow("operation in progress");
   const saved = JSON.parse(readFileSync(join(root, "sessions", id + ".json"), "utf8"));
   expect(saved.uncertainDelivery).toBe(true);
   const restarted = new Runtime(root, mock(async (method) => {
@@ -212,4 +213,38 @@ test("role names and existing thread IDs cannot allocate or queue a lane task", 
   expect(d.store.lanes()).toEqual([]); expect(d.store.items()).toEqual([]);
   expect(lead.received).toEqual([]); expect(duty.received).toEqual([]);
   expect(w.calls.filter((c) => c.argv[0] === "create")).toHaveLength(0);
+});
+
+test("restart preserves a failed turn and cannot close its earlier READY before recovery", async () => {
+  const { done } = await import("../src/harness.ts");
+  const w = new World(), d = w.deps(); homes.push(d.store.root); const id = "failed-thread"; let archived = false;
+  writeFileSync(join(d.store.root, "sessions", id + ".json"), JSON.stringify({ id, name: "failed-task", cwd: d.store.root, instructions: "", status: "unknown", output: "partial", everStarted: true, lastTurnStatus: "failed" }));
+  const r = new Runtime(d.store.root, mock(async (method) => {
+    if (method === "thread/resume") return { thread: { status: { type: "idle" } } };
+    if (method === "thread/archive") { archived = true; return {}; }
+    if (method === "turn/start") return { turn: { id: "recovery-turn" } };
+    return {};
+  }));
+  d.store.saveLane({ key: "failed-task", threadId: id, cwd: d.store.root, brief: "fixture", status: "ready", createdAt: 1, lastActivityAt: 1, nudges: 0, log: [], final: { at: 1, text: "stale", evidence: ["fixture"] } });
+  d.sessions.status = (thread) => r.status(thread); d.sessions.close = (thread) => r.close(thread);
+  expect(await r.status(id)).toBe("failed");
+  await expect(done(d, "failed-task")).rejects.toThrow("failed"); expect(archived).toBe(false);
+  await r.deliver(id, "recover explicitly"); expect(r.sessions.get(id)?.lastTurnStatus).toBeUndefined();
+});
+
+test("reconciliation resumes unloaded saved threads before verifying idle, without starting work", async () => {
+  for (const { delivered, failed } of [{ delivered: true, failed: false }, { delivered: false, failed: false }, { delivered: true, failed: true }]) {
+    const root = home(); mkdirSync(join(root, "sessions")); const calls: string[] = []; let loaded = false;
+    writeFileSync(join(root, "sessions/pending-thread.json"), JSON.stringify({ id: "pending-thread", name: "pending", cwd: root, instructions: "", status: "unknown", output: "", everStarted: true, uncertainDelivery: true, pendingDeliveryId: "saved-batch", lastTurnStatus: failed ? "failed" : undefined }));
+    const r = new Runtime(root, mock(async (method) => {
+      calls.push(method);
+      if (method === "thread/resume") { loaded = true; return { thread: { status: { type: "idle" } } }; }
+      if (method === "thread/read") return { thread: { status: { type: loaded ? "idle" : "notLoaded" } } };
+      return {};
+    }));
+    await r.reconcile("pending-thread", delivered);
+    expect(calls).toEqual(["thread/resume", "thread/read"]);
+    expect(r.sessions.get("pending-thread")).toMatchObject({ status: failed ? "failed" : "idle", uncertainDelivery: false });
+    expect(r.sessions.get("pending-thread")?.lastDeliveryId).toBe(delivered ? "saved-batch" : undefined);
+  }
 });

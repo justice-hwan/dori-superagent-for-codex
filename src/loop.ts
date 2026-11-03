@@ -1,6 +1,6 @@
 // The hourly loop: sync the backlog with live lanes, audit for missed work, start the next item
 // that needs no decision, ask the lead the open questions, and record the run. It never merges,
-// never pushes, never closes a thread and never edits a lane record. See docs/hourly-loop.md.
+// never pushes, never closes a thread and never edits a lane record. See README.md.
 import { appendFileSync, copyFileSync, existsSync, linkSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -36,6 +36,8 @@ export function backlogAdd(
   const priority = opts.priority ?? 5;
   if (!Number.isInteger(priority) || priority < 1 || priority > 9) throw new Refusal("--priority must be 1 (first) to 9 (last)");
   if (!existsSync(briefFile)) throw new Refusal(`no brief file ${briefFile}`);
+  const unlock = itemLease(d, id);
+  try {
   const old = d.store.item(id);
   if (old && (old.status === "open" || old.status === "running")) throw new Refusal(`item ${id} is already ${old.status}`);
   copyFileSync(briefFile, d.store.itemBrief(id));
@@ -48,6 +50,14 @@ export function backlogAdd(
   };
   log(d, item, "add", opts.source ?? briefFile);
   return item;
+  } finally { unlock(); }
+}
+
+function itemLease(d: Deps, id: string): () => void {
+  if (!KEY_RE.test(id)) throw new Refusal(`item id must match ${KEY_RE}`);
+  const unlock = d.store.lockItem(id);
+  if (!unlock) throw new Refusal(`item ${id} update or admission is busy; retry after it finishes`);
+  return unlock;
 }
 
 function knownItem(d: Deps, id: string): Item {
@@ -66,6 +76,8 @@ function openItem(d: Deps, id: string): Item {
 /** Records the human's answer: clears the decision and appends the answer to the item's brief. */
 export function backlogDecide(d: Deps, id: string, answer: string): void {
   if (!answer.trim()) throw new Refusal("decide needs the answer text");
+  const unlock = itemLease(d, id);
+  try {
   const item = openItem(d, id);
   appendFileSync(item.brief, `\n\nDecision on "${item.decision ?? "(none)"}": ${answer.trim()}\n`);
   delete item.decision;
@@ -74,13 +86,17 @@ export function backlogDecide(d: Deps, id: string, answer: string): void {
   item.attempts = 0;
   item.startFailures = 0;
   log(d, item, "decide", answer);
+  } finally { unlock(); }
 }
 
 export function backlogDrop(d: Deps, id: string, why = "dropped"): void {
+  const unlock = itemLease(d, id);
+  try {
   const item = knownItem(d, id);
   if (item.status === "running") throw new Refusal(`item ${id} is running as a lane; close the lane first`);
   item.status = "dropped";
   log(d, item, "drop", why);
+  } finally { unlock(); }
 }
 
 type Issue = { number: number; title: string; body: string; labels: { name: string }[] };
@@ -239,8 +255,12 @@ async function ghState(d: Deps, kind: "pr" | "issue", repo: string, n: string): 
 }
 
 async function sync(d: Deps, run: LoopRun): Promise<void> {
-  for (const item of d.store.items()) {
+  for (const observed of d.store.items()) {
+    const unlock = d.store.lockItem(observed.id);
+    if (!unlock) { run.held.push(`${observed.id} update is busy`); continue; }
     try {
+      const item = d.store.item(observed.id);
+      if (!item) continue;
       if (item.status === "running") {
         const lane = d.store.lane(item.id);
         if (lane?.status === "done") {
@@ -257,6 +277,8 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
         } else if (lane.status === "ready") {
           const m = lane.final?.evidence.map((e) => PR_RE.exec(e)).find(Boolean);
           if (m && (await ghState(d, "pr", m[1]!, m[2]!)) === "MERGED") {
+            const current = d.store.lane(item.id);
+            if (current?.threadId !== lane.threadId || current.status !== "ready" || JSON.stringify(current.final) !== JSON.stringify(lane.final) || d.store.queued(lane.threadId).length) continue;
             item.status = "done";
             log(d, item, "done", "PR merged");
             run.synced.push(`${item.id} done (PR merged)`);
@@ -273,7 +295,7 @@ async function sync(d: Deps, run: LoopRun): Promise<void> {
       }
     } catch (e) {
       run.findings.push(`gh: ${e instanceof Error ? e.message : String(e)}`);
-    }
+    } finally { unlock(); }
   }
 }
 
@@ -325,13 +347,27 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
   }
   // Each start attempt uses one of this run's slots, so a broken host costs at most `starts` failures per run.
   // A failed item counts toward MAX_ATTEMPTS and then becomes a question, so it never blocks the items behind it.
-  let tried = 0;
-  for (; tried < Math.min(starts, candidates.length); tried++) {
-    const item = candidates[tried]!;
+  let tried = 0, attempted = 0;
+  for (; tried < candidates.length && attempted < starts; tried++) {
+    const candidate = candidates[tried]!;
+    if (d.store.stop()) { run.held.push("loop stopped; no more starts this run"); break; }
+    if (!d.store.roles().lead) { run.held.push("no lead thread registered"); break; }
+    if (d.store.lanes().filter((l) => isOpenLane(l.status)).length >= maxLanes) break;
+    const currentHost = d.host();
+    if (currentHost.load1 > (maxLoad ?? currentHost.cores) || currentHost.memFreePct < MEM_FREE_MIN_PCT) {
+      run.held.push(`host busy: load ${currentHost.load1.toFixed(1)} (limit ${maxLoad ?? currentHost.cores}), mem free ${currentHost.memFreePct}%`);
+      break;
+    }
     if (!holds(d, nonce)) {
       run.held.push("lock lost to another loop; no more starts this run");
       break;
     }
+    const unlock = d.store.lockItem(candidate.id);
+    if (!unlock) { run.held.push(`${candidate.id} update is busy`); continue; }
+    try {
+    const item = d.store.item(candidate.id);
+    if (!item || item.status !== "open" || item.decision || isOpenLane(d.store.lane(item.id)?.status ?? "done")) continue;
+    attempted++;
     try {
       await startLane(d, item.id, item.brief, { cwd: item.cwd });
     } catch (e) {
@@ -355,16 +391,23 @@ async function pull(d: Deps, run: LoopRun, maxLanes: number, maxStarts: number, 
     item.status = "running";
     log(d, item, "start", "lane opened by the hourly loop");
     run.started.push(`${item.id} (p${item.priority})`);
+    } finally { unlock(); }
   }
   const waiting = candidates.length - tried;
   if (waiting > 0) {
-    run.held.push(`${waiting} item(s) waiting: ${Math.max(0, maxLanes - open - run.started.length)} free of ${maxLanes} lanes, max ${maxStarts}/run`);
+    const currentOpen = d.store.lanes().filter((l) => isOpenLane(l.status)).length;
+    run.held.push(`${waiting} item(s) waiting: ${Math.max(0, maxLanes - currentOpen)} free of ${maxLanes} lanes, max ${maxStarts}/run`);
   }
 }
 
 function ask(d: Deps, run: LoopRun): void {
   const now = d.now();
-  for (const item of d.store.items()) {
+  for (const observed of d.store.items()) {
+    const unlock = d.store.lockItem(observed.id);
+    if (!unlock) continue;
+    try {
+    const item = d.store.item(observed.id);
+    if (!item) continue;
     if (item.status !== "open" || !item.decision) continue;
     const line = `[DECIDE ${item.id}] ${item.decision} -> dori backlog decide ${item.id} --text '...' | dori backlog drop ${item.id}`;
     if (item.askedAt === undefined) {
@@ -376,6 +419,7 @@ function ask(d: Deps, run: LoopRun): void {
       log(d, item, "remind", item.decision);
       run.asked.push(`(reminder) ${line}`);
     }
+    } finally { unlock(); }
   }
 }
 

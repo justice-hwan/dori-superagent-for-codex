@@ -57,6 +57,8 @@ Busy/blocked threads keep their messages on disk until they can receive a new tu
 
 A confirmed failed turn can receive recovery instructions without restarting other lanes. New instructions invalidate a lane's earlier READY evidence once per inbox batch; acknowledgement-only retries preserve evidence produced by that batch. Closing requires READY, an empty inbox and a finished turn, and excludes concurrent instruction admission or evidence changes. A refused concurrent command can be retried after closure finishes.
 
+Failed-turn state survives runtime restarts until a recovery turn starts. Reconciliation resumes a saved thread before checking its current idle state, and refuses concurrent delivery or closure. Backlog admission rechecks each task under the same lease used by drop/decision commands; a task cancelled while another start waits cannot launch from an older candidate list.
+
 Lane and backlog names cannot be `lead`, `duty` or an existing thread ID. Kickoff addresses the newly allocated thread directly.
 
 ## Approval and interruption
@@ -91,6 +93,8 @@ dori-codex loop resume
 ```
 
 The hourly backlog loop is opt-in (`up --auto-loop`, or run `loop` separately). Its default budget is 3 open lanes and 2 starts per run, subject to host load. Add only authorized tasks. `up --auto-loop` takes effect when starting a stopped runtime.
+
+The loop rechecks current open lanes, host load and its stop switch before each start. Explicit `start` commands allocate outside this loop budget. An item's admission and drop/decision updates share a lease; commands report busy while its start is in progress and can be retried afterward.
 
 ## Local state and communication
 

@@ -234,6 +234,10 @@ export class Store {
     this.writeJson(join(this.root, "backlog", `${checkedId(item.id)}.json`), item);
   }
 
+  lockItem(id: string): (() => void) | undefined {
+    return acquireFileLease(join(this.root, "backlog", `${checkedId(id)}.mutation.lock`))?.release;
+  }
+
   items(): Item[] {
     return readdirSync(join(this.root, "backlog"))
       .filter((f) => f.endsWith(".json"))

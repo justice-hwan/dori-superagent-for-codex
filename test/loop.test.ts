@@ -400,3 +400,59 @@ describe("hardening", () => {
     expect(d.store.runs()).toHaveLength(2);
   });
 });
+
+test("task admission revalidates cancelled or decision-blocked candidates and excludes concurrent mutation", async () => {
+  for (const decision of [false, true]) {
+    const { d, brief, add, tick } = setup(); add("first-task"); add("next-task");
+    const create = d.sessions.create;
+    d.sessions.create = async (...args) => {
+      if (args[0] === "first-task") {
+        expect(() => backlogDrop(d, "first-task")).toThrow("busy");
+        backlogDrop(d, "next-task");
+        if (decision) backlogAdd(d, "next-task", brief, { decision: "new decision required" });
+      }
+      return create(...args);
+    };
+    const run = await tick({ maxStarts: 2 });
+    expect(run.started).toEqual(["first-task (p5)"]);
+    expect(d.store.lane("next-task")).toBeUndefined();
+    expect(d.store.item("next-task")?.status).toBe(decision ? "open" : "dropped");
+    if (decision) expect(d.store.item("next-task")?.decision).toBe("new decision required");
+  }
+});
+
+test("a merged-PR observation cannot finish a backlog item whose READY changed while it waited", async () => {
+  const { send } = await import("../src/harness.ts");
+  const { d, add, tick } = setup(); add("changing-task"); await tick();
+  await ready(d, "changing-task", "old result", ["https://github.com/acme/app/pull/9"]);
+  const exec = d.exec;
+  const execWithFollowup: Exec = async (cmd, argv) => {
+    if (cmd === "gh" && argv[0] === "pr") {
+      await send(d, "changing-task", "required follow-up", "lead");
+      return { code: 0, stdout: JSON.stringify({ state: "MERGED" }), stderr: "" };
+    }
+    return exec(cmd, argv);
+  };
+  await loopTick({ ...d, exec: execWithFollowup }, { force: true, maxStarts: 0 });
+  expect(d.store.lane("changing-task")?.status).toBe("working");
+  expect(d.store.item("changing-task")?.status).toBe("running");
+});
+
+test("each admission rechecks live capacity, host load and the stop switch after an awaited start", async () => {
+  for (const change of ["capacity", "host", "stop"] as const) {
+    const { w, d, brief, add, tick } = setup(); add("first-task"); add("next-task");
+    const create = d.sessions.create;
+    d.sessions.create = async (...args) => {
+      if (args[0] === "first-task") {
+        if (change === "capacity") await startLane(d, "manual-task", brief);
+        if (change === "host") w.host = { load1: 100, cores: 8, memFreePct: 50 };
+        if (change === "stop") d.store.setStop(d.now(), "stop future starts");
+      }
+      return create(...args);
+    };
+    const run = await tick({ maxLanes: 2, maxStarts: 2 });
+    expect(run.started).toEqual(["first-task (p5)"]);
+    expect(d.store.lane("next-task")).toBeUndefined(); expect(d.store.item("next-task")?.status).toBe("open");
+    expect(d.store.lanes()).toHaveLength(change === "capacity" ? 2 : 1);
+  }
+});
