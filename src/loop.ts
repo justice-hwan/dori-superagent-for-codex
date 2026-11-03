@@ -32,6 +32,7 @@ export function backlogAdd(
   opts: { title?: string; priority?: number; cwd?: string; decision?: string; source?: string } = {},
 ): Item {
   if (!KEY_RE.test(id)) throw new Refusal(`item id must match ${KEY_RE} (it becomes the lane key)`);
+  if (id === "lead" || id === "duty" || d.sessions.known(id)) throw new Refusal(`item id ${id} is reserved or already identifies a thread`);
   const priority = opts.priority ?? 5;
   if (!Number.isInteger(priority) || priority < 1 || priority > 9) throw new Refusal("--priority must be 1 (first) to 9 (last)");
   if (!existsSync(briefFile)) throw new Refusal(`no brief file ${briefFile}`);

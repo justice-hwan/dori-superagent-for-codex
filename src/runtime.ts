@@ -20,7 +20,7 @@ export class Runtime {
   private finished = new Set<string>();
   stopping = false;
 
-  constructor(readonly home: string, readonly codex = new Codex()) {
+  constructor(readonly home: string, readonly codex = new Codex(), private readonly reviewTimeoutMs = 1_200_000) {
     mkdirSync(join(home, "sessions"), { recursive: true, mode: 0o700 });
     for (const f of readdirSync(join(home, "sessions"))) {
       if (!f.endsWith(".json")) continue;
@@ -234,11 +234,12 @@ export class Runtime {
     const id = await this.create("review", cwd, "Review only. Never modify, push or merge anything. Finish with VERDICT: CLEAR or VERDICT: BLOCK.", model, true);
     try {
       await this.deliver(id, text);
-      const deadline = Date.now() + 1_200_000;
+      const deadline = Date.now() + this.reviewTimeoutMs;
       while (Date.now() < deadline) {
         const s = this.owned(id);
         if (s.status === "done") return s.output;
-        if (s.status === "blocked") throw new Error(`review needs a response: dori-codex requests (thread ${id})`);
+        // Pending requests remain visible to the operator without losing the
+        // result collector or deadline. Never answer them automatically.
         if (s.status === "unknown" || s.status === "failed") throw new Error("review failed or disconnected; no receipt written");
         await Bun.sleep(100);
       }

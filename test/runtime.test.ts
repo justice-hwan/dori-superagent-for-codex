@@ -9,9 +9,9 @@ import { send, flushInbox } from "../src/harness.ts";
 import { World } from "./fake.ts";
 const fixtures: { home: string; runtime: Runtime }[] = [];
 afterEach(async () => { const all = fixtures.splice(0); for (const { runtime } of all) await runtime.shutdown(); for (const home of new Set(all.map((f) => f.home))) rmSync(home, { recursive: true, force: true }); });
-async function setup() {
+async function setup(reviewTimeoutMs = 1_200_000) {
   const home = mkdtempSync(join(tmpdir(), "dori-rpc-test-"));
-  const runtime = new Runtime(home, new Codex([process.execPath, join(import.meta.dir, "fixtures/fake-codex.ts")]));
+  const runtime = new Runtime(home, new Codex([process.execPath, join(import.meta.dir, "fixtures/fake-codex.ts")]), reviewTimeoutMs);
   fixtures.push({ home, runtime }); await runtime.codex.connect(); return { home, runtime };
 }
 async function until(fn: () => boolean) { const end = Date.now() + 2000; while (!fn()) { if (Date.now() > end) throw new Error("fixture timed out"); await Bun.sleep(5); } }
@@ -138,4 +138,26 @@ test("confirmed failures can recover without restarting other lanes and failed r
   await expect(r.review("FAIL", home)).rejects.toThrow("review failed");
   const failedReview = [...r.sessions.values()].find((s) => s.name === "review")!;
   expect(failedReview).toMatchObject({ closed: true, lastTurnStatus: "failed" });
+});
+
+test("review keeps its result collector while waiting for an explicit request answer", async () => {
+  const { home, runtime: r } = await setup();
+  let outcome = "pending";
+  const review = r.review("APPROVE", home).then((output) => { outcome = "complete"; return output; }, (e) => { outcome = "rejected"; throw e; });
+  await until(() => r.requests.size === 1); await Bun.sleep(150);
+  expect(outcome).toBe("pending");
+  const reviewer = [...r.sessions.values()].find((s) => s.name === "review")!;
+  expect(reviewer.status).toBe("blocked");
+  await r.answer("approval-1", { decision: "decline" });
+  expect(await review).toBe("");
+  expect(reviewer).toMatchObject({ closed: true, lastTurnStatus: "completed" });
+  expect(r.requests.size).toBe(0);
+});
+
+test("a blocked review retains its deadline, interrupts and archives on timeout", async () => {
+  const { home, runtime: r } = await setup(50);
+  await expect(r.review("APPROVE", home)).rejects.toThrow("review timed out");
+  const reviewer = [...r.sessions.values()].find((s) => s.name === "review")!;
+  expect(reviewer).toMatchObject({ closed: true, status: "gone", lastTurnStatus: "interrupted" });
+  expect(r.requests.size).toBe(0);
 });

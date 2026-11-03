@@ -162,6 +162,7 @@ export async function startLane(
   opts: { cwd?: string } = {},
 ): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
+  if (key === "lead" || key === "duty" || d.sessions.known(key)) throw new Refusal(`lane key ${key} is reserved or already identifies a thread`);
   const unlock = d.store.lockAllocation(key);
   if (!unlock) throw new Refusal(`lane ${key} allocation is already in progress`);
   try { return await allocateLane(d, key, briefFile, opts); } finally { unlock(); }
@@ -186,7 +187,7 @@ async function allocateLane(d: Deps, key: string, briefFile: string, opts: { cwd
   };
   d.store.saveLane(lane);
   try {
-    if (await send(d, key, kickoff, "lead") !== "DELIVERED") throw new Refusal("kickoff queued; inspect the existing lane before retrying");
+    if (await send(d, threadId, kickoff, "lead") !== "DELIVERED") throw new Refusal("kickoff queued; inspect the existing lane before retrying");
   } catch (e) {
     d.store.editLane(key, (current) => {
       if (!current.kickoffPending || current.status === "ready" || current.status === "done") return false;
