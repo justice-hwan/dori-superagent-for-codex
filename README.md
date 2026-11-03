@@ -1,181 +1,146 @@
-<p align="center">
-  <img src="skills/dori-mode/assets/dori-avatar.png" alt="Dori" width="120">
-</p>
+# dori-superagent-for-codex
 
-# dori-superagent
+A local multi-session harness built on **Codex app-server**. Derived from [sisyphuslabs/dori-superagent](https://github.com/sisyphuslabs/dori-superagent), preserving its brief → lane → evidence → review → merge workflow.
 
-A proactive multi-session coding-agent harness in about 660 lines of TypeScript, running on [herdr](https://github.com/herdrdev/herdr) and [omo](https://github.com/code-yeongyu/oh-my-openagent).
+[한국어](README.ko.md)
 
-English | [한국어](README.ko.md) | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
+One lead coordinates tasks. Each lane is a persistent Codex thread. A local duty loop batches queued messages, nudges idle work and reports missing sessions. Completion needs evidence; merging needs a CLEAR review at the exact current head/base pair plus at least one passing check.
 
-One lead session talks to you. Each task runs as a lane: its own omo session in its own herdr tab, started from a written brief and finished with a READY that must carry evidence. A duty loop nudges lanes that go quiet, escalates to the lead, and holds messages for busy panes until they can read them. Merges pass through a gate that requires a CLEAR review receipt at the exact head plus green checks.
-
-## Why this exists
-
-DeepSeek published [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype) (first commit 2026-10-31) and, about a day later, the article "Exploring Super-agent Design: Towards a More Autonomous Agent System". Their design has a long-lived Router session that only talks to humans and dispatches work, isolated Worker sessions with one per ticket, event triggers batched per turn, and a watchdog. Their README calls it a research prototype, and its stated philosophy is to "take as little human attention as possible, and give as much value as possible".
-
-We have been running the same shape for about six months, in public:
-
-- 2026-04-18: team mode lands in omo, several agent sessions in terminal panes with a worktree each ([f1268c0](https://github.com/code-yeongyu/oh-my-openagent/commit/f1268c0), [e303fee](https://github.com/code-yeongyu/oh-my-openagent/commit/e303fee)).
-- 2026-05-06: the Dori name enters the omo README ([#3807](https://github.com/code-yeongyu/oh-my-openagent/pull/3807)).
-- 2026-10-07: this repository publishes Dori mode, as `omo-dori-mode-experimental` ([ce53e4d](https://github.com/sisyphuslabs/dori-superagent/commit/ce53e4d)): one agent hands each job to its own agent session in a herdr tab and closes it only after the work is done. The git history is public.
-- 2026-10-31: DeepSeek's prototype gets its first commit.
-- Around 2026-11-01: DeepSeek's article.
-
-It is how we work every day. omo has 70k+ stars. Over the 31 days from 2026-10-03 to 2026-11-02, the [author's GitHub contribution calendar](https://github.com/code-yeongyu) shows 38,656 contributions: about 1,250 a day on average, with peaks of 2,227 on 2026-10-16 and 2,001 on 2026-10-29. That is up to ~2,000 contributions a day, produced with the full version of this setup.
-
-The harness at the root of this repo is the minimal version: the part that runs on herdr and omo alone, with nothing else attached.
-
-## Same structure, same philosophy
-
-Put DeepSeek's prototype docs next to Dori and the concepts line up one for one, in the structure of the pipeline and in the rules of their [philosophy doc](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/000-philosophy.md).
-
-![Dori vs DeepSeek](docs/dori-vs-deepseek.en.png)
-
-### Structure
-
-| DeepSeek dsh-superagent | Dori |
-|---|---|
-| Source: GitHub, Feishu | Dori lives in chat: Slack, Discord, Telegram |
-| Trigger, then Eval, then Ticket | One task asked in chat becomes one ticket |
-| Executor session per ticket: one session, one work directory | One coding-agent session per task, run on omo, many in parallel |
-| Channel: answers in the original conversation, with a PR for example | Reports in the same channel, one status message per task, edited in place |
-| Panel: shows only what needs a person | The ticket board and Notion stay current on their own |
-
-### Philosophy
-
-| DeepSeek dsh-superagent | Dori |
-|---|---|
-| Least human attention, most value | Short messages, no emojis, a ping only after the merge |
-| Acts only when asked or when a written team rule allows it | People set direction and bring new ideas; Dori starts no work nobody asked for |
-| Speaks only when a person must act, one question at a time | A decision comes with options, its own recommendation and one picture |
-| Reports honestly, never works around a block | No "done" without proof; checked against a real case, and the report is the merged result |
-
-The Dori column is our production Dori and Dori mode (`skills/dori-mode`). The harness at the root of this repo implements its lane, inbox, duty and merge-gate part on herdr and omo.
-
-## Architecture
-
-![architecture](docs/architecture.png)
-
-Three roles, each an omo session in a herdr pane. herdr provides the workspaces, tabs and panes, recognises omo in a pane as an agent, and reports its state (idle, working, blocked, done) over its CLI. dori reads that state before it does anything to a pane.
-
-The lead is the only session that talks to you. It turns a request into a brief, opens a lane with `dori start`, reads what lanes send back, and merges.
-
-A lane is one omo session in its own herdr tab, started with one brief and the lane rules appended to it (`prompts/lane-footer.md`). It reports milestones with `dori report` and finishes with `dori ready`, which refuses to go out without an evidence link.
-
-The duty loop is `dori duty --interval 60`, a plain process in a pane next to a duty omo session. Each tick it flushes queued messages into panes that have gone idle, nudges lanes that have been silent, escalates to the lead, and marks a lane whose pane vanished as lost.
-
-State is JSON on disk under `~/.dori` (or `$DORI_HOME`): `lanes/`, `inbox/`, `briefs/`, `receipts/`. The only long-running process the harness adds is the duty loop, and the only runtime dependency is Bun.
-
-![lane lifecycle](docs/lane-flow.png)
-
-`dori start <key> --brief FILE` writes the brief plus the lane rules to `~/.dori/briefs/<key>.md`, opens a tab, runs `omo 'Read your brief at <path> and execute it. Your lane key is <key>.'`, records the lane as `working`, and sends the lead `[START <key>]`. From there the lane reports (`[REPORT <key>]`, or `[REPORT <key> WAITING]` when it is blocked outside its own pane) and ends with `[READY <key>]` plus its evidence links. The lead checks the evidence, runs `dori review` and `dori merge` when there is a PR, and closes the lane with `dori done <key>`. A lane that stays idle gets a nudge at 10 and 20 minutes and is escalated to the lead at 40 (`[ESCALATE <key>]`). A lane whose pane disappears before READY is reported as `[LOST <key>]`.
-
-## Mapping to DeepSeek's super-agent
-
-| DeepSeek super-agent | dori | In this repo |
-|---|---|---|
-| Router session: talks to humans, dispatches | LEAD session: the only one that talks to the human; opens lanes, merges | `prompts/lead.md`, `up()` in `src/cli.ts` |
-| Worker session, one per ticket | LANE: one omo session per task in its own herdr tab, with its own brief | `startLane()` in `src/harness.ts`, `prompts/lane-footer.md` |
-| Ticket + Mandate | brief file + lane rules footer, and a READY that must carry evidence | `~/.dori/briefs/<key>.md`, `ready()` in `src/harness.ts` |
-| Trigger batching: events batched per turn | pane inbox: messages to a busy pane queue and arrive as one batch when it goes idle | `send()`, `flushInbox()` in `src/harness.ts`; `inbox/` in `src/store.ts` |
-| Watchdog | DUTY loop: flushes inboxes, nudges at 10/20 minutes, escalates at 40, detects lost panes | `dutyTick()` in `src/harness.ts`, `prompts/duty.md`, `prompts/nudge.md` |
-| Admission matrix, `maxWorkers` (default 3) | none here; `dori start` refuses only a key that is already open | `startLane()` in `src/harness.ts` |
-| not in the prototype | gated merge: CLEAR review receipt at the exact head SHA plus green checks; an empty check list is never green | `review()`, `mergeGate()` in `src/harness.ts`, `prompts/review.md`, `receipts/` in `src/store.ts` |
-| not in the prototype | one-voice rule: lanes and duty never talk to the human | `prompts/lead.md`, `prompts/duty.md`, `prompts/lane-footer.md` |
-| not in the prototype | full-text answer ledger: each lane's final answer, evidence links and log kept on disk | `Lane.final`, `Lane.log` in `src/store.ts` |
-
-## Quick start
-
-You need Bun 1.3 or newer, herdr, omo, and the GitHub CLI `gh` (used for PR head SHAs, checks and the merge).
-
-```sh
-git clone https://github.com/sisyphuslabs/dori-superagent
-cd dori-superagent
-bun install
-bun link   # puts `dori` on your PATH; or write `bun src/cli.ts` wherever `dori` appears below
+```mermaid
+flowchart LR
+  User --> CLI[dori-codex CLI]
+  CLI --> Runtime[Local runtime / private Unix socket]
+  Runtime --> Codex[Codex app-server / stdio]
+  Codex --> Lead[Lead thread]
+  Codex --> Lanes[Lane threads]
+  Runtime --> Store[Local registry / inbox / receipts]
 ```
 
-Start herdr, then from a shell:
+## Install and use
+
+Requires Bun 1.3+, Codex CLI 0.164+ with `app-server`, Git 2.38+ and a completed `codex login`. GitHub review/merge commands also need authenticated `gh` and a configured Git author identity. macOS and Linux are supported; the local transport uses a Unix socket.
 
 ```sh
-dori up
-# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 home=~/.dori
+git clone https://github.com/justice-hwan/dori-superagent-for-codex.git
+cd dori-superagent-for-codex
+bun install --frozen-lockfile --ignore-scripts
+bun link
+
+dori-codex up --cwd /absolute/path/to/project
+dori-codex doctor
+dori-codex send lead --text 'Inspect this project and propose the next authorized task.'
+dori-codex read lead
+dori-codex status
+dori-codex down
 ```
 
-That opens a herdr workspace named `dori` with a lead pane (omo with `prompts/lead.md` appended to its system prompt), a duty pane (omo with `prompts/duty.md`), and the duty loop below it. Talk to the lead pane. It writes a brief (goal, inputs, deliverable, stop condition, constraints; see [`examples/brief.md`](examples/brief.md)) and opens lanes itself, and you can do the same from the shell:
+`up` starts one owned local app-server process and creates/resumes role threads. Without `--auto-loop`, it does not start a model turn until a message is sent. `down` interrupts owned turns and stops this runtime; stored threads can be resumed later. Existing shared Codex services and remote hosts are not stopped. This package does not register any login service or scheduled job.
+
+`bash install.sh` links this checkout's CLI and the `dori-codex` skill. It never pulls updates or starts services. The command name is `dori-codex`, so an existing `dori` command is preserved.
+
+## Tasks and evidence
 
 ```sh
-dori start fix-flaky-login --brief examples/brief.md
-# STARTED fix-flaky-login pane=w1:p4 brief=~/.dori/briefs/fix-flaky-login.md
-dori status
-# lead=w1:p1 duty=w1:p2 home=~/.dori
-# fix-flaky-login          working  w1:p4    active 0m ago  start: examples/brief.md
+dori-codex start fix-login --brief ./brief.md --cwd /absolute/project
+dori-codex send fix-login --text 'Also verify the existing regression case.'
+dori-codex report fix-login --text 'Regression reproduced; patch under test.'
+dori-codex ready fix-login --text 'Patch ready for review.' --evidence https://github.com/owner/repo/pull/123
+dori-codex review owner/repo#123
+dori-codex merge owner/repo#123 --dry-run
+dori-codex merge owner/repo#123
+dori-codex done fix-login
 ```
 
-A lane key matches `^[a-z][a-z0-9-]{1,40}$`, and a key that is already open is refused.
+READY is a claim. The lead must inspect the evidence. A completed model turn does not automatically mark a lane READY or merge its PR. Reviews run in a separate read-only Codex thread against immutable raw Git source and diff, and bind receipts to the repository, head, base and base branch name. Run commands from a clone containing both commits. The full review and metadata are saved locally. Only a successful turn with an explicit VERDICT and unchanged target identity can produce a receipt.
 
-Inside a lane, omo reports and finishes with the commands the lane rules hand it:
+Review snapshots preserve all symlinks as inert target text with their original mode recorded in metadata, avoiding filesystem traversal through case or Unicode aliases. Reviewer threads suppress automatic project documentation and mark the snapshot untrusted, so its agent instructions and project hooks are reviewed as source.
+
+`merge` checks CI by the captured head SHA and creates a fixed merge commit whose two parents are exactly the reviewed base and head. It records that candidate before pushing, then uses an explicit expected-value lease on the base ref. A concurrent base change rejects the push; branch-protection rejection has no fallback. Retries verify the saved candidate on the remote before attempting another push. This integrates only the reviewed objects and preserves upstream ancestry. Only merge commits are supported.
+
+A PR head can move independently after the last query. Its newer commits cannot enter the fixed candidate. The command reports `INTEGRATED_REVIEWED_PAIR` until GitHub independently confirms the PR is merged at the reviewed head; it never closes a PR containing newer work. Git credentials use the existing authenticated `gh` helper. Missing checks, failed check commands, failures and all-skipped checks are refused.
+
+Busy/blocked threads keep their messages on disk until they can receive a new turn. Inbox batches carry stable delivery IDs to avoid replay after a lost local response. Cursor-covered batches are discarded after a crash; `send` reports delivery of its own message, even when an older batch is being reconciled. A timeout or disconnection without a confirmed start is held as an uncertain delivery across restarts: inspect Codex history, then use `reconcile TARGET --delivered true|false` explicitly. `read TARGET` shows locally received assistant output; it is not a full transcript export. Full thread history stays in Codex's own local storage.
+
+A confirmed failed turn can receive recovery instructions without restarting other lanes. New instructions invalidate a lane's earlier READY evidence once per inbox batch; acknowledgement-only retries preserve evidence produced by that batch. Closing requires READY, an empty inbox and a finished turn, and excludes concurrent instruction admission or evidence changes. A refused concurrent command can be retried after closure finishes.
+
+Failed-turn state survives runtime restarts until a recovery turn starts. Reconciliation resumes a saved thread before checking its current idle state, and refuses concurrent delivery or closure. Backlog admission rechecks each task under the same lease used by drop/decision commands; a task cancelled while another start waits cannot launch from an older candidate list.
+
+An idle resume is checked against the latest persisted turn summary. A missed failure remains failed; missing, unrelated or unfinished outcomes become `recovery` and cannot authorize closure. New recovery instructions can start a fresh turn. Uncertain delivery still requires explicit reconciliation. `read` shows output received by this local runtime; the complete history remains in Codex.
+
+Lane and backlog names cannot be `lead`, `duty` or an existing thread ID. Kickoff addresses the newly allocated thread directly.
+
+## Approval and interruption
+
+New threads use `on-request` approval and a `workspace-write` sandbox. Reviewer threads use `read-only`. No approval is granted automatically.
 
 ```sh
-dori report fix-flaky-login --text 'reproduced: 1 failure in 20 runs, shared session fixture'
-dori report fix-flaky-login --status waiting --text 'WAITING: checks on owner/repo#12'
-dori ready fix-flaky-login --text 'root cause fixed in owner/repo#12, checks green' --evidence https://github.com/owner/repo/pull/12
+dori-codex requests
+# Inspect the request, then write its exact response object to a file.
+# Command/file approval example: {"decision":"decline"}
+dori-codex requests answer REQUEST_ID --json /path/to/response.json
+dori-codex interrupt fix-login
+# If a send was marked uncertain: inspect Codex history, then state whether it arrived.
+dori-codex reconcile fix-login --delivered true
 ```
 
-The lead, on `[READY fix-flaky-login]`:
+Only threads recorded by this runtime can receive messages, be interrupted or archived. Pending questions and approvals are shown by `requests`; answering requires an explicit response file. Credentials remain with Codex's login flow.
+
+Interruption waits for an in-flight submission and confirms the turn's completion event. An unresolved turn or missing confirmation is reported as unconfirmed. Reviews allow 20 minutes of model work, with additional time for setup and cleanup; transport idle limits do not end a running review early.
+
+A pending review question or approval remains available through `requests` while the same review keeps waiting for its result. Answer explicitly in a separate terminal; the review deadline continues to apply and interrupts timed-out work.
+
+## Backlog and duty
+
+The runtime runs duty every 60 seconds. Pause future passes with `duty stop --text maintenance`, inspect with `duty status`, and resume with `duty resume`. This does not interrupt a turn already running; use `interrupt` for that. It nudges idle working lanes at 10 and 20 minutes and escalates at 40; WAITING/blocked work is left alone. A failure in one lane does not stop the others.
+
+Role lookup, creation and registration share a per-home startup lease. Concurrent `up` calls reuse the registered roles or report busy instead of replacing them.
 
 ```sh
-dori review owner/repo#12            # fresh omo reviewer pinned to the head SHA; writes a receipt; exit 0 on CLEAR
-dori merge owner/repo#12 --dry-run   # MERGE_OK ... (dry run), or MERGE_REFUSED <why> with exit 2
-dori merge owner/repo#12             # gh pr merge --squash --match-head-commit <sha>
-dori done fix-flaky-login            # closes the lane's pane; only a READY lane can be closed
+dori-codex backlog add task-one --brief ./brief.md --priority 2
+dori-codex loop --once
+dori-codex loop stop --text 'maintenance'
+dori-codex loop resume
 ```
 
-`dori send <lead|duty|key|pane> --text '...'` delivers a message to a pane, or queues it when the pane is busy. `dori role <lead|duty> [PANE]` registers a pane by hand when you did not use `dori up`. `--text` can be left off to read the message from stdin. The commands the agents see are rendered with the full path to `src/cli.ts` and `DORI_HOME` set, so `dori` does not need to be on their PATH. Environment: `DORI_HOME` (state directory, default `~/.dori`), `DORI_AGENT_CMD` (default `omo`), `DORI_HERDR_SESSION` (a named herdr session), `DORI_CMD` (how the agents are told to call dori).
+The hourly backlog loop is opt-in (`up --auto-loop`, or run `loop` separately). Its default budget is 3 open lanes and 2 starts per run, subject to host load. Add only authorized tasks. `up --auto-loop` takes effect when starting a stopped runtime.
 
-## What the harness enforces
+The loop rechecks current open lanes, host load and its stop switch before each start. Explicit `start` commands allocate outside this loop budget. An item's admission and drop/decision updates share a lease; commands report busy while its start is in progress and can be retried afterward.
 
-One voice. The lead is the only session that talks to you (`prompts/lead.md`). The lane rules say every fact meant for the human goes to the lead (`prompts/lane-footer.md`, rule 3), and the duty session never merges and never talks to the human (`prompts/duty.md`). Everything a lane does reaches the lead pane as a prompt: `[START]`, `[REPORT]`, `[READY]`, `[LOST]`, `[ESCALATE]`.
+## Local state and communication
 
-READY needs evidence. `dori ready` refuses without at least one `--evidence` link and without final answer text (`ready()` in `src/harness.ts`). The text and links are stored on the lane record as `final`, and `dori done` refuses any lane that is not `ready`, so no lane closes without a recorded answer.
+State defaults to `~/.dori-codex`, separate from older installations. `DORI_HOME` changes it and is resolved to an absolute directory before storage, socket identity, daemon startup and generated commands. Session records, inboxes, requests and logs are private local files. The runtime listens on a mode-0600 Unix socket. A dead runtime/inbox lease is reclaimed under a serialized claim gate. A crash during the short claim section leaves a `.claim` file for explicit owner inspection; it is not automatically removed. Shutdown verifies exit of its own child, using bounded TERM/KILL escalation if needed. `DORI_CODEX_BIN` selects the Codex executable, not a shell command.
 
-Busy panes are never interrupted. `dori send` asks herdr for the pane's agent state first. `idle`, `done`, or a plain shell get the message now; anything else has it queued in `~/.dori/inbox/`, and the command prints `QUEUED`. The duty loop delivers the queue when the pane goes idle, as a single message that starts with "N messages arrived while you were busy" (`send()` and `flushInbox()` in `src/harness.ts`). `dori done` waits the same way: it refuses to close a pane that herdr reports as working or blocked.
+There is **no usage collector, install registration, analytics key or telemetry sender in this fork**. Dori's own communication is the local Unix socket and app-server stdio. Codex model requests and user-configured Codex tools/providers still use their normal connections. GitHub operations use `gh`. No Slack, Notion, Kakao or other messenger connector is bundled or started.
 
-Nudges at 10, 20 and 40 minutes. `NUDGE_MINUTES = [10, 20, 40]` in `src/harness.ts`. A lane that has not reported for 10 minutes, and whose pane is not working, gets `prompts/nudge.md` in its pane. At 20 it gets it again. At 40 the duty loop stops nudging and sends the lead `[ESCALATE <key>]`. A `working` pane resets the idle clock, a lane that reported `--status waiting` or whose pane is `blocked` is left alone, any new report resets the nudge count, and a pane that disappears is reported as `[LOST <key>]`.
+This runtime starts its own app-server with the user's existing Codex configuration. It does not attach to the desktop app's live server. Automatic visibility or immediate refresh in the Codex desktop sidebar is not guaranteed; persisted thread IDs can be opened/resumed with compatible Codex clients.
 
-Merge needs a CLEAR receipt at the exact head and green checks. `dori merge` reads the PR's head SHA with `gh`, then requires a receipt for that SHA in `~/.dori/receipts/` with verdict `CLEAR`. Only `dori review` writes receipts. It runs a fresh non-interactive omo (`omo -p --no-session`, optionally `--model`) on `prompts/review.md` pinned to that SHA, and when the reviewer prints no `VERDICT:` line, no receipt is written. Then `gh pr checks` must return at least one check, every check must be `pass` or `skipping`, and at least one must be `pass`. An empty check list is refused with "an empty check list is never green". The merge itself is `gh pr merge --squash --match-head-commit <sha>`. A push after the review changes the head SHA, so the receipt no longer matches and the merge is refused (`review()` and `mergeGate()` in `src/harness.ts`).
+Normal threads use a per-thread workspace permission profile adding the private state directory and exact local Unix socket. A managed proxy uses an empty domain allowlist; this does not grant arbitrary command networking or change global configuration. Review threads retain their separate read-only policy. A stopping runtime is never reported ready; active-work permission failures retain ownership for inspection.
 
-## Dori mode (`skills/dori-mode`)
-
-Dori mode is the messenger-facing half, published in this repository on 2026-10-07. It turns one coding-agent session into an always-on agent you talk to over a messenger. That session hands each job to its own agent session in a herdr tab, keeps a registry of every session it started, and closes one only after the work is proven done: a merged PR, a closed issue, a published version, or a check it can run itself. It ships as a skill (`skills/dori-mode/SKILL.md` plus `references/`) and its own Bun + TypeScript CLI, also called `dori`.
+## Verify
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/sisyphuslabs/dori-superagent/main/install.sh | bash
+bun run typecheck
+bun run check:boundaries
+bun test ./test/
+# Explicit opt-in: uses the signed-in Codex model for one marker response.
+bun run smoke:live
+# Explicit opt-in: the model writes only a fixture project and executes report/ready.
+bun run smoke:lane
 ```
 
-That clones this repo to `~/.dori/src`, links the skill into `~/.agents/skills/dori-mode`, puts Dori mode's `dori` on your PATH with `bun link`, and copies an example config to `~/.dori/config.json`. Commands, configuration, routing and the done protocol are in [`skills/dori-mode/SKILL.md`](skills/dori-mode/SKILL.md) and its [`references/`](skills/dori-mode/references/).
+Offline tests use an in-memory harness and a fake app-server process, including real JSON-RPC framing and Unix-socket CLI integration. They do not invoke a model, send external messages or control production processes. The live smoke uses an isolated Dori home, archives its test thread and stops its runtime.
 
-Both the harness and Dori mode ship a command named `dori`. Install one of them per machine, or run the harness as `bun src/cli.ts` and leave `dori` to Dori mode. The harness's own prompts call it by the full path to `src/cli.ts`, so the agents it starts never depend on which `dori` is on PATH.
-
-## What this is not
-
-A minimal experiment. The harness is about 660 lines of TypeScript on Bun with zero runtime dependencies, and it is not our production stack. Left out on purpose: the cross-machine mesh, heavy-slot scheduling, the chat and ticket-tracker bridges, and receipts for whole test suites. What is here is the part that runs on herdr and omo alone: roles, lanes, the inbox, the duty loop, and the review and merge gate. Dori mode in `skills/dori-mode` is a separate CLI with its own messenger pieces, host guard and heavy-slot runner; the harness imports nothing from it.
-
-## Tests
-
-`bun test ./test/` at the repo root runs the harness's 9 tests and calls no model. Plain `bun test` would also pick up the Dori mode tests.
-
-Eight unit tests (`test/harness.test.ts`) run against a fake herdr (`test/fake.ts`): a recorder that stands in for the `herdr` and `gh` binaries, holds panes with a settable agent status, and has a clock the tests move. They cover lane start and READY, the queue-and-batch behaviour of a busy lead, refused unknown targets, nudges at 10 and 20 with escalation at 40 and WAITING lanes left alone, the working and lost states, every branch of the merge gate (no receipt, BLOCK, empty check list, a red check, all checks skipped, CLEAR plus green), and a reviewer with no VERDICT line.
-
-One end-to-end test (`test/e2e.test.ts`) starts a real herdr server in an isolated named session, creates a workspace, registers a lead pane, and starts a lane whose agent is `test/fixtures/fake-agent.sh` in place of omo. The script reads its brief, calls `dori report` and `dori ready`, and the test checks that `[START]`, `[REPORT]` and `[READY]` arrive in the lead pane and that `dori done` closes the lane. It is skipped when `herdr` is not on PATH. `bun run typecheck` runs `tsc --noEmit`.
-
-Dori mode has its own 68 tests, against fake herdr, git and gh:
+## Keep upstream
 
 ```sh
-cd skills/dori-mode/scripts && bun install && bun test
+dori-codex upstream check
+# In a clean local checkout, create a dedicated integration branch:
+git switch -c integrate-upstream
+git merge --no-commit upstream/main
+# Resolve conflicts while preserving Codex runtime and communication boundaries.
+# Run typecheck, boundary checks, offline tests and live smoke; commit, push and review the PR.
 ```
 
-## License
+`upstream check` uses `.upstream.json`, verifies the remote identity, fetches the declared branch and lists commits since the integrated SHA. On a fresh clone it registers the declared upstream remote. It never pulls, merges, commits, pushes or schedules an update. A rewritten upstream history requires manual inspection. Advance `integratedCommit` only in the reviewed integration branch after resolving every incoming change. Use merge commits for both upstream integration and the resulting fork PR to preserve ancestry.
 
-MIT, see [LICENSE](LICENSE).
+Original baseline: upstream `248c291319a1e45db061f1b3eae1cce9640084f7`; the integrated upstream SHA is tracked in `.upstream.json`. Keep the original MIT license and attribution. Upstream integrations must pass `check:boundaries` before adoption. See [migration notes](docs/migration.md).

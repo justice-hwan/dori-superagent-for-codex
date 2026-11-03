@@ -1,27 +1,47 @@
 #!/usr/bin/env bun
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
-  defaultDeps, done, dutyTick, mergeGate, ready, Refusal, report, review, send, startLane, ROLES, type Deps,
+  defaultDeps, resolveTarget, done, dutyTick, mergeGate, ready, Refusal, report, review, send, startLane, ROLES, type Deps,
 } from "./harness.ts";
-import { shq } from "./herdr.ts";
+import { Sessions, socketPath } from "./sessions.ts";
+import { ensureRuntime } from "./daemon.ts";
+import { serve } from "./runtime.ts";
+import { checkUpstream } from "./upstream.ts";
+import { backlogAdd, backlogDecide, backlogDrop, backlogImport, loopTick, msUntilNext, summary, HOUR, IMPORT_LIMIT } from "./loop.ts";
 import type { Role } from "./store.ts";
 
-const USAGE = `dori - a proactive multi-session harness on herdr + omo
+const USAGE = `dori-codex - a local multi-session harness on Codex app-server
 
-  dori up [--cwd DIR]                         open lead + duty panes in a new herdr workspace
-  dori role <lead|duty> [PANE]                register a pane as lead or duty (default: this pane)
-  dori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omo session, brief + lane rules
-  dori report <key> --text T [--status working|waiting]
-  dori ready <key> --text T --evidence LINK [--evidence LINK ...]
-  dori send <lead|duty|key|pane> --text T     deliver now, or queue until the pane is idle
-  dori duty [--once] [--interval SECONDS]     flush inboxes, nudge idle lanes, escalate, detect lost lanes
-  dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
-  dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
-  dori done <key>                             lead closes a READY lane
-  dori status
+  dori-codex up [--cwd DIR]                         start local runtime + lead/duty threads (no model turn)
+  dori-codex role <lead|duty> [THREAD]                register an existing Dori-owned thread
+  dori-codex start <key> --brief FILE [--cwd DIR]   start a Codex thread from a brief + lane rules
+  dori-codex report <key> --text T [--status working|waiting]
+  dori-codex ready <key> --text T --evidence LINK [--evidence LINK ...]
+  dori-codex send <lead|duty|key|thread> --text T     deliver now, or queue until the thread is idle
+  dori-codex duty stop [--text WHY] | resume | status   pause/resume the duty loop
+  dori-codex duty [--once] [--interval SECONDS]     flush inboxes, nudge idle lanes, escalate, detect lost lanes
+  dori-codex loop [--once] [--interval S] [--max-lanes N] [--max-starts N] [--max-load L] [--force]
+                                              hourly: sync backlog, audit missed work, start the next item, ask decisions
+  dori-codex loop stop [--text WHY] | resume | status   kill switch and last run
+  dori-codex backlog add <id> --brief FILE [--title T] [--priority 1-9] [--cwd DIR] [--decision Q]
+  dori-codex backlog list | decide <id> --text ANSWER | drop <id> [--text WHY]
+  dori-codex backlog import <owner/repo> [--label dori] [--cwd DIR]   open labelled issues -> items
+  dori-codex review <owner/repo#N> [--model M]      fresh Codex reviewer at the exact head -> receipt
+  dori-codex merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> merge commit
+  dori-codex done <key>                             lead closes a READY lane
+  dori-codex status                            local registry (works while stopped)
+  dori-codex read <lead|key|thread>             latest assistant output
+  dori-codex interrupt <lead|key|thread>        interrupt an owned turn
+  dori-codex reconcile TARGET --delivered true|false  resolve a delivery after inspecting history
+  dori-codex requests                          pending approval / input requests
+  dori-codex requests answer ID --json FILE    answer one pending request explicitly
+  dori-codex doctor                            runtime + sign-in status (no credentials)
+  dori-codex down                              interrupt owned turns and stop local runtime
+  dori-codex upstream check [--repo DIR]        fetch and list unintegrated upstream commits
 
 --text may be omitted to read the message from stdin.`;
+
 
 type Args = { pos: string[]; flags: Map<string, string[]> };
 
@@ -52,26 +72,19 @@ async function textOf(a: Args): Promise<string> {
   return (await Bun.stdin.text()).trim();
 }
 
-function renderPrompt(d: Deps, name: string): string {
-  const dir = join(d.store.root, "prompts");
-  mkdirSync(dir, { recursive: true });
-  const src = readFileSync(join(import.meta.dir, "..", "prompts", name), "utf8").replaceAll("{{dori}}", d.doriCmd);
-  const out = join(dir, name);
-  writeFileSync(out, src);
-  return out;
-}
-
-async function up(d: Deps, cwd: string): Promise<void> {
-  const env = { DORI_HOME: d.store.root };
-  const lead = await d.herdr.createWorkspace("dori", cwd);
-  await d.herdr.run(lead.paneId, `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, "lead.md"))}`);
-  d.store.setRole("lead", lead.paneId);
-  const duty = await d.herdr.createTab("duty", cwd, lead.workspaceId, env);
-  await d.herdr.run(duty.paneId, `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, "duty.md"))}`);
-  d.store.setRole("duty", duty.paneId);
-  const loop = await d.herdr.split(duty.paneId, cwd, env);
-  await d.herdr.run(loop.paneId, `${d.doriCmd} duty --interval 60`);
-  console.log(`UP lead=${lead.paneId} duty=${duty.paneId} loop=${loop.paneId} home=${d.store.root}`);
+async function up(d: Deps, cwd: string, autoLoop: boolean): Promise<void> {
+  const lease = d.store.lockRoles();
+  if (!lease) throw new Refusal("role startup or registration is busy; retry after it finishes");
+  try {
+  await ensureRuntime(d.store.root, autoLoop);
+  for (const role of ROLES) {
+    const old = d.store.roles()[role];
+    if (old && await d.sessions.status(old) !== "gone") continue;
+    const instructions = readFileSync(join(import.meta.dir, "..", "prompts", `${role}.md`), "utf8").replaceAll("{{dori}}", d.doriCmd);
+    lease.set(role, await d.sessions.create(role, cwd, instructions));
+  }
+  console.log(`UP lead=${d.store.roles().lead} duty=${d.store.roles().duty} home=${d.store.root}`);
+  } finally { lease.release(); }
 }
 
 function status(d: Deps): void {
@@ -80,7 +93,7 @@ function status(d: Deps): void {
   for (const l of d.store.lanes()) {
     const last = l.log.at(-1);
     const age = Math.round((d.now() - l.lastActivityAt) / 60_000);
-    console.log(`${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.paneId.padEnd(8)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`);
+    console.log(`${l.key.padEnd(24)} ${l.status.padEnd(8)} ${l.threadId.padEnd(8)} active ${age}m ago  ${last ? `${last.kind}: ${last.text.slice(0, 60)}` : ""}`);
   }
 }
 
@@ -88,22 +101,79 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
   const a = parse(argv);
   const [cmd, x] = a.pos;
   switch (cmd) {
+    case "upstream": {
+      if (x !== "check") throw new Refusal("use upstream check");
+      console.log(JSON.stringify(await checkUpstream(resolve(one(a, "repo") ?? join(import.meta.dir, ".."))), null, 2));
+      return 0;
+    }
+    case "serve": {
+      return await serve(d.store.root, async () => {
+        await dutyTick(d);
+        if (process.env["DORI_AUTO_LOOP"] === "1") await loopTick(d);
+      });
+    }
+    case "down": {
+      const runtime = new Sessions(d.store.root);
+      await runtime.call("shutdown");
+      for (let n = 0; n < 100; n++) {
+        await Bun.sleep(100);
+        if (!existsSync(socketPath(d.store.root))) {
+          if (existsSync(join(d.store.root, "runtime.lock"))) throw new Refusal("runtime socket disappeared but ownership remains; shutdown unconfirmed");
+          console.log("DOWN"); return 0;
+        }
+        const health = await runtime.call<{ shutdownError?: string }>("health");
+        if (health.shutdownError) throw new Refusal(`shutdown unconfirmed: ${health.shutdownError}`);
+      }
+      throw new Refusal("runtime is still stopping; inspect before retrying");
+    }
+    case "doctor": {
+      const r = new Sessions(d.store.root);
+      console.log(JSON.stringify({ runtime: await r.call("health"), account: await r.call("account") })); return 0;
+    }
+    case "read": {
+      const id = resolveTarget(d, need(x, "target"));
+      const state = new Sessions(d.store.root).snapshot(id) as { output?: string } | undefined;
+      console.log(state?.output ?? ""); return 0;
+    }
+    case "interrupt": {
+      const id = resolveTarget(d, need(x, "target"));
+      await new Sessions(d.store.root).call("interrupt", { threadId: id }); console.log(`INTERRUPTED ${x}`); return 0;
+    }
+    case "reconcile": {
+      const id = resolveTarget(d, need(x, "target"));
+      const value = one(a, "delivered");
+      if (value !== "true" && value !== "false") throw new Refusal("inspect the Codex history, then give --delivered true or --delivered false explicitly");
+      await new Sessions(d.store.root).call("reconcile", { threadId: id, delivered: value === "true" });
+      console.log(`RECONCILED ${x} delivered=${value}`); return 0;
+    }
+    case "requests": {
+      const runtime = new Sessions(d.store.root);
+      if (x === "answer") {
+        const id = need(a.pos[2], "request id");
+        const file = need(one(a, "json"), "--json FILE containing the exact response object");
+        const result = JSON.parse(readFileSync(file, "utf8"));
+        await runtime.call("answer", { id, result }); console.log(`ANSWERED ${id}`);
+      } else if (x === undefined) console.log(JSON.stringify(await runtime.call("requests"), null, 2));
+      else throw new Refusal("use requests, or requests answer <id> --json FILE");
+      return 0;
+    }
     case "up":
-      await up(d, resolve(one(a, "cwd") ?? process.cwd()));
+      await up(d, resolve(one(a, "cwd") ?? process.cwd()), one(a, "auto-loop") === "true");
       return 0;
     case "role": {
       const role = need(x, "role") as Role;
       if (!ROLES.includes(role)) throw new Refusal(`role must be one of ${ROLES.join(", ")}`);
-      const pane = need(a.pos[2] ?? process.env["HERDR_PANE_ID"], "pane id (not inside herdr?)");
-      d.store.setRole(role, pane);
-      console.log(`ROLE ${role}=${pane}`);
+      const thread = need(a.pos[2], "thread id");
+      if (!d.sessions.known(thread)) throw new Refusal("role must refer to a Dori-owned thread");
+      d.store.setRole(role, thread);
+      console.log(`ROLE ${role}=${thread}`);
       return 0;
     }
     case "start": {
       const lane = await startLane(d, need(x, "lane key"), need(one(a, "brief"), "--brief"), {
-        cwd: one(a, "cwd"), workspace: one(a, "workspace"),
+        cwd: one(a, "cwd"),
       });
-      console.log(`STARTED ${lane.key} pane=${lane.paneId} brief=${lane.brief}`);
+      console.log(`STARTED ${lane.key} thread=${lane.threadId} brief=${lane.brief}`);
       return 0;
     }
     case "report": {
@@ -121,22 +191,106 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       console.log(`${await send(d, need(x, "target"), await textOf(a), one(a, "from") ?? process.env["DORI_LANE"] ?? "cli")} ${x}`);
       return 0;
     case "duty": {
+      if (x === "stop") { d.store.setStop(d.now(), one(a, "text") ?? "stopped by hand", "duty"); console.log("DUTY STOPPED"); return 0; }
+      if (x === "resume") { d.store.clearStop("duty"); console.log("DUTY RESUMED"); return 0; }
+      if (x === "status") { const stop = d.store.stop("duty"); console.log(stop ? `stopped: ${stop.reason}` : "running (no stop file)"); return 0; }
+      if (x !== undefined) throw new Refusal(`unknown duty command ${x}`);
       const interval = Number(one(a, "interval") ?? "60") * 1000;
+      if (!Number.isFinite(interval) || interval <= 0) throw new Refusal("--interval must be positive");
       do {
-        for (const e of await dutyTick(d)) console.log(`DUTY ${e.lane ?? e.pane} ${e.action}`);
+        for (const e of await dutyTick(d)) console.log(`DUTY ${[e.lane ?? e.thread, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`);
         if (one(a, "once")) break;
         await Bun.sleep(interval);
       } while (true);
       return 0;
     }
+    case "loop": {
+      if (x === "stop") {
+        d.store.setStop(d.now(), one(a, "text") ?? "stopped by hand");
+        console.log("LOOP STOPPED");
+        return 0;
+      }
+      if (x === "resume") {
+        d.store.clearStop();
+        console.log("LOOP RESUMED");
+        return 0;
+      }
+      if (x === "status") {
+        const stop = d.store.stop();
+        const last = d.store.lastRun();
+        console.log(stop ? `stopped: ${stop.reason}` : "running (no stop file)");
+        console.log(last ? summary(last) : "no run yet");
+        return 0;
+      }
+      if (x !== undefined) throw new Refusal(`unknown loop command ${x}\n\n${USAGE}`);
+      const interval = Number(one(a, "interval") ?? String(HOUR / 1000)) * 1000;
+      const opts = {
+        interval,
+        maxLanes: Number(one(a, "max-lanes") ?? process.env["DORI_MAX_LANES"] ?? "3"),
+        maxStarts: Number(one(a, "max-starts") ?? process.env["DORI_MAX_STARTS"] ?? "2"),
+        force: one(a, "force") === "true",
+        ...(one(a, "max-load") ?? process.env["DORI_MAX_LOAD"] ? { maxLoad: Number(one(a, "max-load") ?? process.env["DORI_MAX_LOAD"]) } : {}),
+      };
+      const count = (n: number): boolean => Number.isInteger(n) && n >= 0;
+      if (!(Number.isFinite(interval) && interval > 0) || !count(opts.maxLanes) || !count(opts.maxStarts) ||
+        !(opts.maxLoad === undefined || (Number.isFinite(opts.maxLoad) && opts.maxLoad > 0))) {
+        throw new Refusal("--interval and --max-load must be finite positive numbers; --max-lanes and --max-starts whole numbers >= 0");
+      }
+      do {
+        try {
+          const run = await loopTick(d, opts);
+          console.log(run.skipped ? `LOOP skipped: ${run.skipped}` : `LOOP started=${run.started.length} findings=${run.findings.length} asked=${run.asked.length}`);
+        } catch (e) {
+          console.error(`LOOP ERROR ${e instanceof Error ? e.message : String(e)}`);
+          if (one(a, "once")) return 1;
+        }
+        if (one(a, "once")) break;
+        opts.force = false;
+        await Bun.sleep(msUntilNext(d, interval));
+      } while (true);
+      return 0;
+    }
+    case "backlog": {
+      if (x === "add") {
+        const id = need(a.pos[2], "item id");
+        const p = one(a, "priority");
+        const item = backlogAdd(d, id, need(one(a, "brief"), "--brief"), {
+          title: one(a, "title"), cwd: one(a, "cwd"), decision: one(a, "decision"),
+          ...(p !== undefined ? { priority: Number(p) } : {}),
+        });
+        console.log(`ADDED ${item.id} p${item.priority}${item.decision ? " (needs decision)" : ""}`);
+      } else if (x === "list" || x === undefined) {
+        for (const i of d.store.items()) {
+          console.log(`${i.id.padEnd(24)} ${i.status.padEnd(8)} p${i.priority}  ${i.decision ? `DECIDE: ${i.decision}` : i.title}`);
+        }
+      } else if (x === "decide") {
+        const id = need(a.pos[2], "item id");
+        backlogDecide(d, id, await textOf(a));
+        console.log(`DECIDED ${id}`);
+      } else if (x === "drop") {
+        const id = need(a.pos[2], "item id");
+        backlogDrop(d, id, one(a, "text"));
+        console.log(`DROPPED ${id}`);
+      } else if (x === "import") {
+        const { added, capped } = await backlogImport(d, need(a.pos[2], "owner/repo"), one(a, "label") ?? "dori", one(a, "cwd"));
+        console.log(`IMPORTED ${added.length}${added.length ? `: ${added.join(", ")}` : ""}`);
+        if (capped) console.error(`WARNING: gh returned ${IMPORT_LIMIT} issues, the import limit; some labelled issues may be missing`);
+      } else {
+        throw new Refusal(`unknown backlog command ${x}\n\n${USAGE}`);
+      }
+      return 0;
+    }
     case "review": {
       const r = await review(d, need(x, "PR"), one(a, "model"));
-      console.log(`REVIEW ${x} head=${r.sha} verdict=${r.verdict}`);
+      console.log(`REVIEW ${x} head=${r.sha} base=${r.baseSha} verdict=${r.verdict} report=${r.reportPath}`);
       return r.verdict === "CLEAR" ? 0 : 1;
     }
-    case "merge":
-      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true" }));
+    case "merge": {
+      const method = one(a, "method") ?? "merge";
+      if (method !== "merge") throw new Refusal("--method must be merge; reviewed-pair integration preserves both parents");
+      console.log(await mergeGate(d, need(x, "PR"), { dryRun: one(a, "dry-run") === "true", method: "merge" }));
       return 0;
+    }
     case "done":
       await done(d, need(x, "lane key"));
       console.log(`DONE ${x}`);
@@ -151,10 +305,6 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
 }
 
 if (import.meta.main) {
-  try {
-    process.exit(await main(process.argv.slice(2)));
-  } catch (e) {
-    if (e instanceof Refusal) { console.error(e.message); process.exit(2); }
-    throw e;
-  }
+  try { process.exit(await main(process.argv.slice(2))); }
+  catch (e) { console.error(e instanceof Error ? e.message : String(e)); process.exit(e instanceof Refusal ? 2 : 1); }
 }

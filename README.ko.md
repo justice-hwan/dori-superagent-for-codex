@@ -1,181 +1,83 @@
-<p align="center">
-  <img src="skills/dori-mode/assets/dori-avatar.png" alt="Dori" width="120">
-</p>
+# dori-superagent-for-codex
 
-# dori-superagent
+[sisyphuslabs/dori-superagent](https://github.com/sisyphuslabs/dori-superagent)를 upstream으로 삼는 **Codex app-server 기반 로컬 실행기**입니다. 작업 지시서 → 작업 세션 → 증거 확인 → 정확한 커밋의 리뷰 → 머지 흐름을 유지합니다.
 
-코딩 에이전트 세션 여러 개를 능동적으로 굴리는 하네스입니다. TypeScript 약 660줄이고, [herdr](https://github.com/herdrdev/herdr)와 [omo](https://github.com/code-yeongyu/oh-my-openagent) 위에서 돕니다.
+## 시작
 
-[English](README.md) | 한국어 | [简体中文](README.zh-CN.md) | [日本語](README.ja.md)
-
-사람과 이야기하는 세션은 리드 하나입니다. 작업은 하나하나 레인(lane)으로 돌아갑니다. 레인은 자기 herdr 탭에 뜬 omo 세션 하나로, 글로 쓴 브리프를 받아 시작하고 증거가 붙은 READY로 끝납니다. 듀티(duty) 루프는 조용해진 레인을 찔러 보고, 그래도 안 되면 리드에게 올리고, 바쁜 pane에 갈 메시지는 읽을 수 있을 때까지 들고 있습니다. 머지는 게이트를 지나는데, 게이트가 요구하는 것은 정확히 그 head에서 받은 CLEAR 리뷰 영수증과 녹색 체크입니다.
-
-## 왜 만들었나
-
-DeepSeek이 [dsh-superagent-prototype](https://github.com/deepseek-ai/dsh-superagent-prototype)을 공개했습니다(첫 커밋 2026-10-31). 하루쯤 지나 "Exploring Super-agent Design: Towards a More Autonomous Agent System"이라는 글도 냈습니다. 글에 나온 설계는 사람하고만 대화하고 일을 나눠 주는 오래 사는 Router 세션, 티켓마다 하나씩 격리된 Worker 세션, 턴마다 묶어서 처리하는 이벤트 트리거, 그리고 watchdog입니다. README에는 리서치 프로토타입이라고 적혀 있고, 내건 철학은 "take as little human attention as possible, and give as much value as possible"입니다.
-
-같은 구조를 저희는 여섯 달쯤 전부터 공개된 자리에서 돌려 왔습니다.
-
-- 2026-04-18: omo에 팀 모드가 들어갔습니다. 터미널 pane마다 에이전트 세션 하나, 세션마다 worktree 하나입니다([f1268c0](https://github.com/code-yeongyu/oh-my-openagent/commit/f1268c0), [e303fee](https://github.com/code-yeongyu/oh-my-openagent/commit/e303fee)).
-- 2026-05-06: Dori라는 이름이 omo README에 올라갔습니다([#3807](https://github.com/code-yeongyu/oh-my-openagent/pull/3807)).
-- 2026-10-07: 이 저장소가 `omo-dori-mode-experimental`이라는 이름으로 Dori 모드를 공개했습니다([ce53e4d](https://github.com/sisyphuslabs/dori-superagent/commit/ce53e4d)). 에이전트 하나가 일마다 herdr 탭에 에이전트 세션을 따로 띄워 맡기고, 일이 끝나야 닫습니다. git 히스토리가 공개돼 있습니다.
-- 2026-10-31: DeepSeek 프로토타입의 첫 커밋.
-- 2026-11-01 무렵: DeepSeek의 글.
-
-매일 이렇게 일합니다. omo는 star가 7만 개를 넘었습니다. 2026-10-03부터 2026-11-02까지 31일 동안 [작성자의 GitHub 기여 그래프](https://github.com/code-yeongyu)에 찍힌 contribution은 38,656건입니다. 하루 평균 약 1,250건이고, 최고치는 2026-10-16의 2,227건과 2026-10-29의 2,001건입니다. 하루에 많게는 2,000건 가까이이고, 이 셋업의 풀 버전으로 낸 숫자입니다.
-
-이 저장소 루트의 하네스는 그 최소 버전입니다. herdr와 omo만으로 돌아가는 부분만 있고, 다른 것은 붙이지 않았습니다.
-
-## 같은 구조, 같은 철학
-
-DeepSeek 프로토타입의 문서를 Dori 옆에 놓으면 개념이 하나하나 맞물립니다. 파이프라인 구조가 그렇고, [철학 문서](https://github.com/deepseek-ai/dsh-superagent-prototype/blob/main/docs/000-philosophy.md)의 규칙도 그렇습니다.
-
-![Dori vs DeepSeek](docs/dori-vs-deepseek.ko.png)
-
-### 구조
-
-| DeepSeek dsh-superagent | Dori |
-|---|---|
-| Source: GitHub, Feishu | Dori는 채팅에 삽니다. Slack, Discord, Telegram |
-| Trigger, Eval, Ticket 순서 | 채팅에서 부탁한 일 하나가 티켓 하나가 됩니다 |
-| 티켓마다 Executor 세션 하나: 세션 하나, 작업 디렉터리 하나 | 작업마다 코딩 에이전트 세션 하나. omo 위에서 돌고, 여러 개가 병렬로 돕니다 |
-| Channel: 원래 대화에 답함, 예를 들어 PR로 | 같은 채널에 보고합니다. 작업당 상태 메시지 하나를 제자리에서 고쳐 씁니다 |
-| Panel: 사람이 봐야 할 것만 보여 줌 | 티켓 보드와 Notion이 알아서 최신 상태를 유지합니다 |
-
-### 철학
-
-| DeepSeek dsh-superagent | Dori |
-|---|---|
-| 사람의 주의는 최소로, 가치는 최대로 | 짧은 메시지, 이모지 없음, 핑은 머지 뒤에 한 번 |
-| 부탁받았거나 글로 적힌 팀 규칙이 허용할 때만 움직임 | 방향과 새 아이디어는 사람이 정합니다. 아무도 시키지 않은 일을 Dori가 시작하지는 않습니다 |
-| 사람이 움직여야 할 때만 말하고, 질문은 한 번에 하나 | 결정 요청에는 선택지, Dori의 추천, 그림 한 장이 같이 갑니다 |
-| 정직하게 보고하고, 막힌 것을 우회하지 않음 | 증거 없는 'done'은 없습니다. 실제 사례로 확인하고, 머지된 결과를 보고합니다 |
-
-Dori 열은 저희가 실제로 굴리는 프로덕션 Dori와 Dori 모드(`skills/dori-mode`)입니다. 이 저장소 루트의 하네스는 그중 레인, 인박스, 듀티, 머지 게이트 부분을 herdr와 omo 위에 구현합니다.
-
-## 아키텍처
-
-![architecture](docs/architecture.png)
-
-역할은 셋이고, 각각 herdr pane 하나에 뜬 omo 세션입니다. herdr가 워크스페이스, 탭, pane을 만들어 주고, pane 안의 omo를 에이전트로 알아보고, 그 상태(idle, working, blocked, done)를 CLI로 알려 줍니다. dori는 pane에 무엇을 하든 그 전에 이 상태부터 읽습니다.
-
-리드는 사람과 대화하는 유일한 세션입니다. 요청을 브리프로 바꾸고, `dori start`로 레인을 열고, 레인이 보내오는 것을 읽고, 머지합니다.
-
-레인은 자기 herdr 탭에 뜬 omo 세션 하나입니다. 브리프 하나에 레인 규칙(`prompts/lane-footer.md`)을 덧붙여서 시작합니다. 중간 결과는 `dori report`로 보고하고 `dori ready`로 끝내는데, `dori ready`는 증거 링크가 없으면 나가지 않습니다.
-
-듀티 루프는 `dori duty --interval 60`입니다. 듀티 omo 세션 옆 pane에서 도는 보통 프로세스입니다. 틱마다 idle이 된 pane에 쌓인 메시지를 밀어 넣고, 조용한 레인을 찔러 보고, 리드에게 올리고, pane이 사라진 레인은 lost로 표시합니다.
-
-상태는 `~/.dori`(또는 `$DORI_HOME`) 아래 JSON입니다. `lanes/`, `inbox/`, `briefs/`, `receipts/`. 하네스가 더하는 상주 프로세스는 듀티 루프 하나뿐이고, 런타임 의존성도 Bun 하나뿐입니다.
-
-![lane lifecycle](docs/lane-flow.png)
-
-`dori start <key> --brief FILE`은 브리프와 레인 규칙을 `~/.dori/briefs/<key>.md`에 쓰고, 탭을 열고, `omo 'Read your brief at <path> and execute it. Your lane key is <key>.'`를 실행하고, 레인을 `working`으로 기록하고, 리드에게 `[START <key>]`를 보냅니다. 그다음부터 레인은 보고하고(`[REPORT <key>]`, 자기 pane 바깥의 무언가에 막혔으면 `[REPORT <key> WAITING]`), 증거 링크를 붙인 `[READY <key>]`로 끝냅니다. 리드는 증거를 확인하고, PR이 있으면 `dori review`와 `dori merge`를 돌리고, `dori done <key>`로 레인을 닫습니다. 가만히 있는 레인은 10분과 20분에 nudge를 받고 40분에 리드로 올라갑니다(`[ESCALATE <key>]`). READY 전에 pane이 사라진 레인은 `[LOST <key>]`로 보고됩니다.
-
-## DeepSeek super-agent 대응표
-
-| DeepSeek super-agent | dori | 이 저장소에서 |
-|---|---|---|
-| Router 세션: 사람과 대화하고 일을 나눠 줌 | LEAD 세션: 사람과 대화하는 유일한 세션. 레인을 열고 머지함 | `prompts/lead.md`, `src/cli.ts`의 `up()` |
-| Worker 세션, 티켓마다 하나 | LANE: 작업마다 omo 세션 하나. 자기 herdr 탭과 자기 브리프 | `src/harness.ts`의 `startLane()`, `prompts/lane-footer.md` |
-| Ticket + Mandate | 브리프 파일 + 레인 규칙 푸터, 그리고 증거가 꼭 붙어야 하는 READY | `~/.dori/briefs/<key>.md`, `src/harness.ts`의 `ready()` |
-| 트리거 배칭: 이벤트를 턴마다 묶음 | pane 인박스: 바쁜 pane에 보낸 메시지는 큐에 쌓였다가 idle이 되면 한 묶음으로 도착 | `src/harness.ts`의 `send()`, `flushInbox()`; `src/store.ts`의 `inbox/` |
-| Watchdog | DUTY 루프: 인박스를 비우고, 10/20분에 nudge, 40분에 리드로 올리고, 사라진 pane 감지 | `src/harness.ts`의 `dutyTick()`, `prompts/duty.md`, `prompts/nudge.md` |
-| Admission matrix, `maxWorkers`(기본 3) | 없음. `dori start`는 이미 열린 키만 거절 | `src/harness.ts`의 `startLane()` |
-| 프로토타입에 없음 | 게이트 머지: 정확한 head SHA의 CLEAR 리뷰 영수증 + 녹색 체크. 빈 체크 목록은 녹색이 아님 | `src/harness.ts`의 `review()`, `mergeGate()`, `prompts/review.md`, `src/store.ts`의 `receipts/` |
-| 프로토타입에 없음 | 한 목소리 규칙: 레인과 듀티는 사람과 대화하지 않음 | `prompts/lead.md`, `prompts/duty.md`, `prompts/lane-footer.md` |
-| 프로토타입에 없음 | 답변 전문 장부: 레인마다 최종 답변, 증거 링크, 로그를 디스크에 보관 | `src/store.ts`의 `Lane.final`, `Lane.log` |
-
-## 빠른 시작
-
-Bun 1.3 이상, herdr, omo, 그리고 GitHub CLI `gh`가 필요합니다. `gh`는 PR의 head SHA와 체크를 읽고 머지할 때 씁니다.
+Bun 1.3 이상, Codex CLI 0.164 이상, Git 2.38 이상, `codex login`이 필요합니다. PR 리뷰·머지는 로그인된 GitHub CLI `gh`도 필요합니다. Unix socket을 사용하므로 macOS·Linux를 대상으로 합니다.
 
 ```sh
-git clone https://github.com/sisyphuslabs/dori-superagent
-cd dori-superagent
-bun install
-bun link   # puts `dori` on your PATH; or write `bun src/cli.ts` wherever `dori` appears below
+bun install --frozen-lockfile --ignore-scripts
+bun link
+dori-codex up --cwd /절대/프로젝트/경로
+dori-codex doctor
+dori-codex send lead --text '현재 프로젝트를 확인하고 요청한 작업을 진행해줘'
+dori-codex read lead
+dori-codex status
+dori-codex down
 ```
 
-herdr를 띄운 다음 셸에서:
+`up`은 로컬 실행기와 lead·duty 세션을 준비합니다. 메시지를 보내기 전에는 모델을 실행하지 않습니다. `down`은 이 실행기가 소유한 턴을 중단하고 자기 프로세스를 종료합니다. 기존 Codex 서비스나 원격 호스트에는 종료 명령을 보내지 않습니다. 로그인 자동 실행이나 예약 작업을 등록하지 않습니다.
+
+명령 이름은 `dori-codex`입니다. 기존 `dori` 명령은 덮어쓰지 않습니다. `bash install.sh`는 현재 체크아웃의 CLI와 스킬만 연결하며 자동으로 pull하거나 서비스를 시작하지 않습니다.
+
+## 작업과 완료
 
 ```sh
-dori up
-# UP lead=w1:p1 duty=w1:p2 loop=w1:p3 home=~/.dori
+dori-codex start fix-login --brief ./brief.md --cwd /절대/프로젝트
+dori-codex report fix-login --text '기존 오류를 재현했고 수정 검증 중'
+dori-codex ready fix-login --text '검토 준비 완료' --evidence https://github.com/owner/repo/pull/123
+dori-codex review owner/repo#123
+dori-codex merge owner/repo#123 --dry-run
+dori-codex done fix-login
 ```
 
-`dori`라는 herdr 워크스페이스가 열립니다. 리드 pane(시스템 프롬프트 뒤에 `prompts/lead.md`를 붙인 omo), 듀티 pane(`prompts/duty.md`를 붙인 omo), 그 아래 듀티 루프입니다. 리드 pane에 말을 걸면 됩니다. 리드가 브리프(목표, 입력, 결과물, 종료 조건, 제약. [`examples/brief.md`](examples/brief.md) 참고)를 쓰고 레인을 직접 엽니다. 셸에서 열어도 됩니다.
+READY에는 증거가 필요하고, 리드가 실제 증거를 확인해야 합니다. 모델 응답이 끝났다는 이유로 완료 처리하거나 머지하지 않습니다. 머지에는 현재 head와 base의 CLEAR 리뷰와 하나 이상의 통과한 체크가 필요합니다. head가 바뀌거나 체크가 없거나 모두 skip이면 거절합니다. 리뷰는 정확한 head·base의 로컬 원본 Git 소스 스냅샷과 diff를 만들어 읽기 전용 Codex 세션에서 실행합니다. 해당 커밋을 가진 로컬 clone에서 명령을 실행해야 합니다. 리뷰 중 head나 base가 바뀌면 승인 기록을 만들지 않습니다. 병합은 검토한 head와 base만 부모로 갖는 고정 merge commit을 만들고, 원격 base가 검토 당시 값일 때만 반영합니다. 병합 후보를 먼저 기록하므로 응답 유실 후에도 같은 후보를 확인합니다. PR head가 뒤늦게 바뀌면 새 커밋은 들어가지 않으며, 검토한 쌍의 반영과 GitHub PR 병합 상태를 구분해서 보고합니다. merge commit만 지원해 upstream 이력을 보존합니다.
+
+바쁜 세션으로 보낸 메시지는 로컬 inbox에 보관했다가 받을 수 있을 때 묶어서 전달합니다. 메시지 묶음은 고정된 전달 ID로 중복 제출을 막습니다. 수신을 확인할 수 없는 타임아웃은 재시작 후에도 자동 재전송하지 않습니다. Codex 이력을 확인한 뒤 `reconcile 대상 --delivered true` 또는 `--delivered false`로 전달 여부를 명시해야 합니다. `read`는 최근 응답을 표시하고, 전체 이력은 Codex 자체 로컬 저장소에 남습니다.
+
+## 승인과 중단
+
+일반 세션은 `workspace-write`와 `on-request`, 리뷰는 `read-only`를 사용합니다. 승인을 자동으로 허용하지 않습니다.
 
 ```sh
-dori start fix-flaky-login --brief examples/brief.md
-# STARTED fix-flaky-login pane=w1:p4 brief=~/.dori/briefs/fix-flaky-login.md
-dori status
-# lead=w1:p1 duty=w1:p2 home=~/.dori
-# fix-flaky-login          working  w1:p4    active 0m ago  start: examples/brief.md
+dori-codex requests
+# 요청을 확인하고 응답 파일 작성: 예) {"decision":"decline"}
+dori-codex requests answer 요청ID --json /절대/응답.json
+dori-codex interrupt fix-login
 ```
 
-레인 키는 `^[a-z][a-z0-9-]{1,40}$`에 맞아야 하고, 이미 열린 키는 거절됩니다.
+이 실행기에 등록된 세션만 조작합니다. 로그인과 자격 증명은 Codex가 관리합니다.
 
-레인 안의 omo는 레인 규칙이 건네준 명령으로 보고하고 끝냅니다.
+## 자동 감시와 백로그
+
+duty는 60초마다 큐와 작업 상태를 확인합니다. `duty stop --text 이유`, `duty status`, `duty resume`으로 다음 감시 주기를 중지·확인·재개합니다. 이미 실행 중인 턴의 중단에는 `interrupt`를 사용합니다. 작업 중으로 등록된 세션이 10분·20분 동안 조용하면 확인 메시지를 보내고, 40분이면 리드에게 알립니다. 외부 대기·승인 대기 상태는 재촉하지 않습니다.
+
+시간별 백로그 실행은 `up --auto-loop` 또는 `loop`를 명시적으로 실행할 때 켜집니다. 기본 한도는 열린 작업 3개, 한 번에 시작 2개이며 호스트 부하도 확인합니다. 사용자가 요청한 작업만 백로그에 넣습니다.
+
+## 저장과 통신
+
+기본 상태는 `~/.dori-codex`에 저장합니다. `DORI_HOME`으로 변경할 수 있고, 구형 `~/.dori` 기록과 분리됩니다. `DORI_CODEX_BIN`은 사용할 Codex 실행 파일입니다. 로컬 socket과 상태 파일은 소유자 전용 권한을 사용합니다.
+
+이 포크에는 **사용 통계 수집기·설치 등록·분석 키·텔레메트리 전송 코드가 없습니다.** Dori 자체 통신은 로컬 Unix socket과 app-server 표준 입출력입니다. Codex의 모델 호출과 사용자가 설정한 도구·제공자의 통신은 그대로 필요합니다. GitHub 작업에는 `gh`를 사용합니다. Slack·Notion·카카오 연동 코드는 포함하거나 시작하지 않습니다.
+
+이 실행기는 자체 app-server를 시작합니다. Codex 데스크톱 앱이 쓰는 서버에 직접 붙는 방식은 아니며, 앱 사이드바의 자동 표시·즉시 갱신은 보장하지 않습니다. 저장된 thread ID는 호환되는 Codex 클라이언트에서 이어갈 수 있습니다.
+
+## 검증과 upstream
 
 ```sh
-dori report fix-flaky-login --text 'reproduced: 1 failure in 20 runs, shared session fixture'
-dori report fix-flaky-login --status waiting --text 'WAITING: checks on owner/repo#12'
-dori ready fix-flaky-login --text 'root cause fixed in owner/repo#12, checks green' --evidence https://github.com/owner/repo/pull/12
+bun run typecheck
+bun run check:boundaries
+bun test ./test/
+# 실제 로그인된 모델로 응답 한 번을 확인하는 별도 명령
+bun run smoke:live
 ```
 
-리드는 `[READY fix-flaky-login]`을 받으면:
+일반 테스트는 가짜 app-server와 격리된 상태 디렉터리를 사용합니다. 실제 모델 테스트는 테스트 세션을 보관 처리하고 실행기를 종료합니다.
 
-```sh
-dori review owner/repo#12            # fresh omo reviewer pinned to the head SHA; writes a receipt; exit 0 on CLEAR
-dori merge owner/repo#12 --dry-run   # MERGE_OK ... (dry run), or MERGE_REFUSED <why> with exit 2
-dori merge owner/repo#12             # gh pr merge --squash --match-head-commit <sha>
-dori done fix-flaky-login            # closes the lane's pane; only a READY lane can be closed
-```
+최초 upstream 기준은 `248c291319a1e45db061f1b3eae1cce9640084f7`이며, 현재 반영한 커밋은 `.upstream.json`에 기록합니다. `dori-codex upstream check`는 원본 remote를 확인하고 새 커밋을 fetch하여 목록을 보여줍니다. 새 clone에는 선언된 upstream remote를 등록하지만, pull·merge·commit·push나 정기 실행을 하지는 않습니다. 통합 전용 브랜치에서 변경을 반영하고 검증과 독립 리뷰를 거친 뒤 merge commit으로 병합합니다. 그래야 원본 커밋 이력이 보존됩니다. [전체 명령·설계](README.md), [이전 버전과의 차이](docs/migration.md)를 참고하세요.
 
-`dori send <lead|duty|key|pane> --text '...'`는 pane에 메시지를 전달하고, pane이 바쁘면 큐에 넣습니다. `dori role <lead|duty> [PANE]`은 `dori up`을 쓰지 않았을 때 pane을 손으로 등록합니다. `--text`를 빼면 stdin에서 읽습니다. 에이전트가 보는 명령은 `src/cli.ts`의 전체 경로와 `DORI_HOME`이 채워진 채로 렌더링되므로, 에이전트의 PATH에 `dori`가 없어도 됩니다. 환경 변수는 `DORI_HOME`(상태 디렉터리, 기본 `~/.dori`), `DORI_AGENT_CMD`(기본 `omo`), `DORI_HERDR_SESSION`(이름 붙인 herdr 세션), `DORI_CMD`(에이전트에게 알려 줄 dori 호출법)입니다.
 
-## 하네스가 강제하는 것
+런타임·inbox의 오래된 잠금은 claim gate 안에서 회수합니다. 짧은 잠금 생성 구간에서 프로세스가 죽어 `.claim` 파일이 남으면 소유자 상태를 확인한 뒤 수동으로 정리해야 합니다. 시작 여부가 불명확한 lane은 대기 상태로 유지하며, 확인 전에는 대체 세션을 만들지 않습니다. 종료는 자신이 시작한 app-server의 실제 종료까지 확인합니다.
 
-목소리는 하나입니다. 사람과 대화하는 세션은 리드뿐입니다(`prompts/lead.md`). 레인 규칙은 사람에게 갈 사실을 전부 리드로 보내라고 하고(`prompts/lane-footer.md` 3번 규칙), 듀티 세션은 머지도 하지 않고 사람과 대화도 하지 않습니다(`prompts/duty.md`). 레인이 하는 일은 전부 리드 pane에 프롬프트로 들어갑니다. `[START]`, `[REPORT]`, `[READY]`, `[LOST]`, `[ESCALATE]`.
-
-READY에는 증거가 붙어야 합니다. `dori ready`는 `--evidence` 링크가 하나도 없거나 최종 답변 텍스트가 없으면 거절합니다(`src/harness.ts`의 `ready()`). 텍스트와 링크는 레인 레코드에 `final`로 저장되고, `dori done`은 `ready`가 아닌 레인을 거절합니다. 그래서 답변이 기록되지 않은 채 닫히는 레인은 없습니다.
-
-바쁜 pane은 건드리지 않습니다. `dori send`는 먼저 herdr에 그 pane의 에이전트 상태를 묻습니다. `idle`, `done`, 아니면 그냥 셸이면 바로 전달하고, 그 밖의 상태면 `~/.dori/inbox/`에 큐로 넣고 `QUEUED`를 출력합니다. pane이 idle이 되면 듀티 루프가 큐를 메시지 하나로 전달하는데, 그 메시지는 "N messages arrived while you were busy"로 시작합니다(`src/harness.ts`의 `send()`와 `flushInbox()`). `dori done`도 같은 식으로 기다립니다. herdr가 working이나 blocked라고 하는 pane은 닫지 않습니다.
-
-nudge는 10분, 20분, 40분입니다. `src/harness.ts`의 `NUDGE_MINUTES = [10, 20, 40]`입니다. 10분 동안 보고가 없고 pane도 working이 아닌 레인은 자기 pane에 `prompts/nudge.md`를 받습니다. 20분에 한 번 더 받습니다. 40분이 되면 듀티 루프는 nudge를 그만두고 리드에게 `[ESCALATE <key>]`를 보냅니다. `working`인 pane은 idle 시계가 되돌아가고, `--status waiting`으로 보고했거나 pane이 `blocked`인 레인은 건드리지 않고, 새 보고가 오면 nudge 횟수가 0으로 돌아가고, pane이 사라지면 `[LOST <key>]`로 보고됩니다.
-
-머지에는 정확한 head의 CLEAR 영수증과 녹색 체크가 필요합니다. `dori merge`는 `gh`로 PR의 head SHA를 읽고, 그 SHA에 대한 영수증이 `~/.dori/receipts/`에 verdict `CLEAR`로 있어야 넘어갑니다. 영수증을 쓰는 것은 `dori review`뿐입니다. `dori review`는 그 SHA에 고정한 `prompts/review.md`로 새 비대화형 omo(`omo -p --no-session`, 필요하면 `--model`)를 돌리고, 리뷰어가 `VERDICT:` 줄을 출력하지 않으면 영수증을 쓰지 않습니다. 그다음 `gh pr checks`가 체크를 하나 이상 돌려줘야 하고, 모든 체크가 `pass`나 `skipping`이어야 하고, 그중 하나 이상은 `pass`여야 합니다. 빈 체크 목록은 "an empty check list is never green"으로 거절합니다. 머지 자체는 `gh pr merge --squash --match-head-commit <sha>`입니다. 리뷰 뒤에 push가 들어오면 head SHA가 바뀌어 영수증이 맞지 않게 되고, 머지는 거절됩니다(`src/harness.ts`의 `review()`와 `mergeGate()`).
-
-## Dori 모드(`skills/dori-mode`)
-
-Dori 모드는 메신저 쪽 절반으로, 2026-10-07에 이 저장소에서 공개됐습니다. 코딩 에이전트 세션 하나를 메신저로 말을 거는, 늘 켜져 있는 에이전트로 만듭니다. 그 세션은 일마다 herdr 탭에 에이전트 세션을 따로 띄워 맡기고, 자기가 띄운 세션을 전부 레지스트리에 적어 두고, 일이 끝났다는 증명이 있어야 닫습니다. 증명은 머지된 PR, 닫힌 이슈, 배포된 버전, 아니면 스스로 돌려 볼 수 있는 체크입니다. 스킬(`skills/dori-mode/SKILL.md`와 `references/`)과 자체 Bun + TypeScript CLI로 나가고, CLI 이름도 `dori`입니다.
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/sisyphuslabs/dori-superagent/main/install.sh | bash
-```
-
-이 한 줄이 저장소를 `~/.dori/src`에 클론하고, 스킬을 `~/.agents/skills/dori-mode`에 링크하고, `bun link`로 Dori 모드의 `dori`를 PATH에 올리고, 예시 설정을 `~/.dori/config.json`에 복사합니다. 명령, 설정, 라우팅, done 프로토콜은 [`skills/dori-mode/SKILL.md`](skills/dori-mode/SKILL.md)와 그 [`references/`](skills/dori-mode/references/)에 있습니다.
-
-하네스와 Dori 모드 둘 다 `dori`라는 명령을 내놓습니다. 한 머신에는 하나만 설치하거나, 하네스는 `bun src/cli.ts`로 부르고 `dori`는 Dori 모드에 맡기면 됩니다. 하네스의 프롬프트는 자기 명령을 `src/cli.ts`의 전체 경로로 부르므로, 하네스가 띄운 에이전트는 PATH의 `dori`가 어느 쪽이든 상관없습니다.
-
-## 범위
-
-최소 실험입니다. 하네스는 Bun 위의 TypeScript 약 660줄에 런타임 의존성이 없고, 저희의 프로덕션 스택은 아닙니다. 일부러 뺀 것은 머신 간 메시, heavy-slot 스케줄링, 채팅과 티켓 트래커 브리지, 테스트 스위트 전체에 대한 영수증입니다. 여기 있는 것은 herdr와 omo만으로 돌아가는 부분입니다. 역할, 레인, 인박스, 듀티 루프, 리뷰와 머지 게이트. `skills/dori-mode`의 Dori 모드는 별개의 CLI입니다. 메신저 기능, 호스트 가드, heavy-slot 러너가 따로 있고, 하네스는 거기서 아무것도 import하지 않습니다.
-
-## 테스트
-
-저장소 루트에서 `bun test ./test/`를 치면 하네스 테스트 9개가 돌고, 모델은 부르지 않습니다. 그냥 `bun test`를 치면 Dori 모드 테스트까지 같이 돕니다.
-
-단위 테스트 8개(`test/harness.test.ts`)는 가짜 herdr(`test/fake.ts`)를 상대로 돕니다. `herdr`와 `gh` 바이너리 대신 들어가는 레코더로, 에이전트 상태를 바꿀 수 있는 pane들을 들고 있고, 테스트가 손으로 돌리는 시계가 있습니다. 다루는 것은 레인 시작과 READY, 바쁜 리드의 큐와 묶음 전달, 모르는 대상 거절, 10분과 20분의 nudge와 40분의 에스컬레이션과 WAITING 레인 제외, working과 lost 상태, 머지 게이트의 모든 분기(영수증 없음, BLOCK, 빈 체크 목록, 빨간 체크, 전부 skip, CLEAR + 녹색), VERDICT 줄 없는 리뷰어입니다.
-
-엔드투엔드 테스트 1개(`test/e2e.test.ts`)는 격리된 이름의 세션에 진짜 herdr 서버를 띄우고, 워크스페이스를 만들고, 리드 pane을 등록하고, omo 대신 `test/fixtures/fake-agent.sh`를 에이전트로 쓰는 레인을 시작합니다. 이 스크립트는 브리프를 읽고 `dori report`와 `dori ready`를 부르고, 테스트는 `[START]`, `[REPORT]`, `[READY]`가 리드 pane에 도착하는지와 `dori done`이 레인을 닫는지 확인합니다. PATH에 `herdr`가 없으면 건너뜁니다. `bun run typecheck`는 `tsc --noEmit`입니다.
-
-Dori 모드에는 가짜 herdr, git, gh를 상대로 하는 자체 테스트 68개가 있습니다.
-
-```sh
-cd skills/dori-mode/scripts && bun install && bun test
-```
-
-## 라이선스
-
-MIT입니다. [LICENSE](LICENSE)에 있습니다.
+재시작 때 idle이라는 이유만으로 성공을 추정하지 않고 최신 저장 turn 결과를 조회합니다. 실패·미완료·결과 불명 상태로는 READY를 닫을 수 없으며, 명시적인 새 복구 지시를 받을 수 있습니다. 전달 여부의 불확실성은 여전히 `reconcile`로 판단해야 합니다.
