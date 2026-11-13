@@ -8,21 +8,23 @@ The hc lead remains the system administrator. Codex Dori and the dot manage work
 
 Local regression tests are not proof of a connected dot. The actual account was inspected on November 13, 2026: ChatGPT was signed in with a Pro plan and a Work surface; GitHub CLI authentication was independently verified for `justice-hwan`. Neither observation proves Dot computer permission, plugin installation, or successful event receipt.
 
+A separate native inspection of the existing dot's profile confirmed that this personal Mac already has access allowed and is online; its cloud computer is ready. No new computer permission is currently needed on that Mac. The new Dori skill invocation and MCP Events connection are still unverified.
+
 Real acceptance still requires a bounded request from the user's dot, the corresponding Codex lead job/outcome, a verified MCP Events subscription, a delivered event acknowledged by ChatGPT, and the resulting Dot task evidence. Do not call the integration connected until those artifacts exist.
 
 ## Native request and status route
 
 Official Dots documentation supports local skills on a separately connected computer. This avoids a public MCP endpoint for submitting a request and reading its result.
 
-In the ChatGPT app, open the dot's profile, then **Computers**, choose this personal Mac, select **Allow**, and confirm **Allow access**. This is distinct from Codex computer access and Work Sync. Keep the computer online and ChatGPT open. The user must handle that permission confirmation. Do not connect company computers for this personal setup.
+If access is not already allowed, open the dot's profile in the ChatGPT app, then **Computers**, choose this personal Mac, select **Allow**, and confirm **Allow access**. This is distinct from Codex computer access and Work Sync. Keep the computer online and ChatGPT open. The user must handle a new permission confirmation; do not request it again for an already authorized computer. Do not connect company computers for this personal setup.
 
 Install the local skill from `integrations/dots/SKILL.md` using the app's supported local skill setup. Configure its fixed landed integration path and `DORI_DOTS_CONFIG`; do not copy credentials into the skill.
 
 The integration CLI accepts one JSON object on stdin:
 
 ```sh
-bun /absolute/landed/repo/integrations/dots/cli.ts submit < request.json
-bun /absolute/landed/repo/integrations/dots/cli.ts status < status.json
+"$BUN_BIN" /absolute/landed/repo/integrations/dots/cli.ts submit < request.json
+"$BUN_BIN" /absolute/landed/repo/integrations/dots/cli.ts status < status.json
 ```
 
 `request.json` contains `origin_id`, `request_id`, and `prompt`. Both identifiers are required, at most 128 characters each. The prompt is 1–8,000 characters. Repeated identical requests return the same job. Reusing the identity for a changed prompt is rejected.
@@ -49,11 +51,12 @@ These paths are operator configuration, not tool arguments. `runtimeHome` must n
 
 The CLI and server enforce directory mode `0700` and a restrictive umask; the server also enforces socket mode `0600`. It creates a lock file to prevent duplicate bridge processes. After an unclean shutdown, verify the prior process has exited before removing its stale lock/socket; never run competing bridge processes against one database. Back up the database together with its SQLite WAL according to normal SQLite backup practice. It contains request text and signing secrets and must not be committed or published.
 
-Use the production Bun 1.4.4 executable. On this development host, it is the embedded runtime:
+Use a verified standalone Bun 1.4.4 executable at a durable path for production. Do not depend on a temporary staging binary or silently use another version from PATH. This installation's verified location is:
 
 ```sh
-env BUN_BE_BUN=1 /Applications/OmO.app/Contents/Resources/omo-runtime/darwin-arm64/omo \
-  /absolute/landed/repo/integrations/dots/cli.ts status < status.json
+export BUN_BIN="$HOME/.local/share/dori-tools/bun/1.4.4/bun"
+"$BUN_BIN" --version
+"$BUN_BIN" /absolute/landed/repo/integrations/dots/cli.ts status < status.json
 ```
 
 ## Lead outcome contract
