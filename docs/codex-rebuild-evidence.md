@@ -146,24 +146,26 @@ not a benchmark or a speedup claim.
 
 ## Required checks
 
-The latest corrective tree passed every required gate using genuine standalone
-**Bun 1.4.4**:
+The latest runtime-loader corrective tree completed `bun run --bun ci` with
+exit 0 using genuine standalone **Bun 1.4.4** and the injected operator home
+and runtime variables unset:
 
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 250 files passed.
-- Harness tests: **508 passed, 0 failed** across 62 files.
+- Source-size gate: 252 files passed.
+- Harness tests: **517 passed, 0 failed** across 62 files.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
-The native and static gates are recorded in
+The complete passing run is `/tmp/dori-runtime-loader-verified-ci.log`.
+The earlier `7e8d246` native and static gates are recorded in
 `/tmp/dori-trust-corrections-separated-ci.log`. Its messenger subprocess inherited
 the operator's `DORI_HOME` and `DORI_RUNTIME=hc`, causing three unchanged
 runtime-selection tests to fail. Only that stage was repeated with those
 variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
 392/0 result. No passed stage was repeated and no legacy test was changed.
 Earlier isolated runs skipped eight external hc/herdr cases because those
-binaries were absent from their test PATH; the latest run reports all 508
+binaries were absent from their test PATH; the latest run reports all 517
 harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -312,6 +314,28 @@ dependency discovery and admitted outcome delivery still pass.
 `/tmp/dori-adapter-closure-red.log` preserve the failures;
 `/tmp/dori-direct-authority-green.log` and
 `/tmp/dori-adapter-closure-green.log` preserve the focused passing coverage.
+
+Epoch 9 rejected `7e8d246` because `createRequire()` can load code absent from
+the compiler manifest. Nine new regressions failed against that committed owner,
+covering direct, forged-base and symlink loaders, asynchronous module evaluation,
+descriptor getters, async factory/tool calls, result getters and close.
+The corrected owner was restored byte for byte after the bounded mutation run.
+No historical integration code or native model turn was executed by these tests.
+
+The bounded Bun probe observed that asynchronous ESM evaluation loses its
+AsyncLocalStorage context, while synchronous ESM loading retains it. Core now
+loads the frozen ESM entry synchronously and retains its runtime resolver policy
+during factory and tool execution, serialization and close. Nonbuiltin runtime
+module loads are refused, even through loader aliases. Entry-level top-level
+await is unsupported; asynchronous initialization remains in the factory.
+Descriptors and results are materialized inside the policy so getters cannot
+defer code loading until the surrounding host serializes them.
+
+`/tmp/dori-runtime-loader-nine-red.log` preserves all nine pre-fix failures;
+`/tmp/dori-runtime-loader-verified-ci.log` records their passing final-tree run
+with all existing tests retained. The accepted `7e8d246` native workflow,
+desktop continuation and timing evidence remains scoped to that head and its
+unchanged behavior; it was not relabelled or rerun for this adapter-only fix.
 
 ## Autonomous lead acceptance
 

@@ -1,4 +1,3 @@
-import { pathToFileURL } from "node:url";
 import { Refusal } from "../../refusal.ts";
 import { trustedPath } from "./bridge-install.ts";
 import { adapterConfig, admittedThreadForJob } from "./bridge-jobs.ts";
@@ -6,35 +5,41 @@ import type { BridgeScope } from "./bridge-tools.ts";
 import { array, object, text } from "./protocol.ts";
 import { argumentsOf } from "./bridge-schema.ts";
 import { installAdapter } from "./bridge-adapter-install.ts";
+import { executeAdapter } from "./bridge-adapter-execution.ts";
 
 const allowed = ["dori_job_status", "dori_report_outcome"];
 type Adapter = {
   readonly descriptors: readonly Record<string, unknown>[];
   readonly factory: (options: unknown) => unknown;
   readonly configPath: string;
+  readonly entry: string;
 };
 async function load(scope: BridgeScope): Promise<Adapter | undefined> {
   const config = adapterConfig(scope.root);
   if (!config || scope.role !== "lead") return undefined;
   const module = trustedPath(config.module, scope.cwd);
   const configPath = trustedPath(config.configPath, scope.cwd);
-  const imported: unknown = await import(pathToFileURL(await installAdapter(module, scope.cwd)).href);
-  const exports = object(imported);
-  const factory = exports["createPersonalTools"];
-  if (typeof factory !== "function") throw new Refusal("Adapter omitted createPersonalTools");
-  const descriptors = array(exports["leadTools"]).map(object);
-  const names = descriptors.map((tool) => text(tool["name"]));
-  if (
-    names.length !== allowed.length ||
-    new Set(names).size !== names.length ||
-    names.some((name) => !allowed.includes(name))
-  )
-    throw new Refusal("Adapter exposes an unsupported management tool");
-  return {
-    descriptors,
-    factory: (options: unknown): unknown => Reflect.apply(factory, undefined, [options]),
-    configPath,
-  };
+  const entry = await installAdapter(module, scope.cwd);
+  return executeAdapter(entry, () => {
+    const imported: unknown = import.meta.require(entry);
+    const exports = object(imported);
+    const factory = exports["createPersonalTools"];
+    if (typeof factory !== "function") throw new Refusal("Adapter omitted createPersonalTools");
+    const descriptors = array(JSON.parse(JSON.stringify(exports["leadTools"]))).map(object);
+    const names = descriptors.map((tool) => text(tool["name"]));
+    if (
+      names.length !== allowed.length ||
+      new Set(names).size !== names.length ||
+      names.some((name) => !allowed.includes(name))
+    )
+      throw new Refusal("Adapter exposes an unsupported management tool");
+    return {
+      descriptors,
+      factory: (options: unknown): unknown => Reflect.apply(factory, undefined, [options]),
+      configPath,
+      entry,
+    };
+  });
 }
 export const adapterDescriptors = async (scope: BridgeScope): Promise<readonly Record<string, unknown>[]> =>
   (await load(scope))?.descriptors ?? [];
@@ -48,21 +53,23 @@ export const callAdapter = async (scope: BridgeScope, name: string, input: unkno
   const job = text(args["job_id"]);
   if (admittedThreadForJob(scope.root, job) !== scope.id)
     throw new Refusal("Job was not delivered to this lead thread");
-  const value: unknown = await adapter.factory({
-    configPath: adapter.configPath,
-    binding: {
-      role: "lead",
-      thread_id: scope.id,
-      admittedThreadForJob: async (id: string) => admittedThreadForJob(scope.root, id),
-    },
+  return executeAdapter(adapter.entry, async () => {
+    const value: unknown = await adapter.factory({
+      configPath: adapter.configPath,
+      binding: {
+        role: "lead",
+        thread_id: scope.id,
+        admittedThreadForJob: async (id: string) => admittedThreadForJob(scope.root, id),
+      },
+    });
+    const service = object(value);
+    const call = service["call"];
+    const close = service["close"];
+    if (typeof call !== "function" || typeof close !== "function") throw new Refusal("Invalid lead outcome adapter");
+    try {
+      return JSON.parse(JSON.stringify(await call(name, input)));
+    } finally {
+      close();
+    }
   });
-  const service = object(value);
-  const call = service["call"];
-  const close = service["close"];
-  if (typeof call !== "function" || typeof close !== "function") throw new Refusal("Invalid lead outcome adapter");
-  try {
-    return await call(name, input);
-  } finally {
-    close();
-  }
 };

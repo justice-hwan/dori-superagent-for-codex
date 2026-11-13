@@ -162,7 +162,13 @@ dependency must be outside agent-writable roots. Before discovery imports the
 adapter, core builds one protected bundle with macros disabled, rejects unresolved
 runtime imports, and validates every resolved input, including symlinked packages.
 Only builtin imports remain external. The immutable bundle is reused by that
-bridge process. The lead can then use only `dori_job_status` and
+bridge process. Its ESM entry must load synchronously, without top-level await;
+async initialization belongs in `createPersonalTools`. Core retains a runtime
+module-resolution policy during entry evaluation, factory/tool calls, result
+serialization and close. Filesystem module loads through runtime aliases such
+as `createRequire()` are refused even when the compiler omitted them from its
+manifest. Static bundled dependencies and runtime builtins remain supported.
+The lead can then use only `dori_job_status` and
 `dori_report_outcome`; the host derives its native thread identity.
 
 Core reserves a recognized instance-scoped Dots job before inbox submission and

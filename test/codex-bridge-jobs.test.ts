@@ -1,5 +1,5 @@
 import { expect, onTestFinished, test } from "bun:test";
-import { copyFileSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
@@ -132,3 +132,46 @@ test("typed outcome hook derives actual admitted identity and rejects unadmitted
   expect(recorded["admitted"]).toBe(lead.id);
   expect(recorded["input"]).toEqual(outcome);
 });
+
+test.each(["factory", "call", "result", "close"] as const)(
+  "admitted adapter rejects runtime workspace loaders during %s",
+  async (phase) => {
+    const { f, d, lead } = await setup();
+    const trusted = mkdtempSync(join(homedir(), ".dori-adapter-call-"));
+    onTestFinished(() => rmSync(trusted, { recursive: true, force: true }));
+    const module = join(trusted, "adapter.ts");
+    const configPath = join(trusted, "config.json");
+    const marker = join(trusted, "executed");
+    const payload = join(f.spec.cwd, "payload.ts");
+    copyFileSync(new URL("./fixtures/bridge-adapter-runtime.ts", import.meta.url), module);
+    writeFileSync(
+      payload,
+      `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "escaped");`,
+    );
+    writeFileSync(configPath, JSON.stringify({ phase, payload }));
+    writeFileSync(
+      join(f.root, "config.json"),
+      JSON.stringify({
+        codexBridgeAdapter: { module, configPath, instance: "personal" },
+      }),
+    );
+    await send(d, "lead", envelope, "dots");
+    const scope: BridgeScope = {
+      root: realpathSync(f.root),
+      cwd: realpathSync(f.spec.cwd),
+      role: "lead",
+      key: "",
+      id: lead.id,
+    };
+
+    await expect(
+      callBridgeTool(d, scope, "dori_report_outcome", {
+        job_id: job,
+        revision: 1,
+        state: "completed",
+        summary: "Bounded fixture",
+      }),
+    ).rejects.toThrow("Runtime adapter dependencies must be bundled");
+    expect(existsSync(marker)).toBe(false);
+  },
+);

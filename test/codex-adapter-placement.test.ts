@@ -38,7 +38,15 @@ const setup = async () => {
   return { f, trusted, module, scope, source };
 };
 
-test.each(["direct", "symlink-package", "opaque-import", "opaque-require"] as const)(
+test.each([
+  "direct",
+  "symlink-package",
+  "opaque-import",
+  "opaque-require",
+  "create-require",
+  "create-require-forged-base",
+  "create-require-symlink",
+] as const)(
   "tool discovery refuses %s adapter dependencies before executing them, without an admitted job",
   async (mode) => {
     const { f, trusted, module, scope, source } = await setup();
@@ -63,9 +71,22 @@ test.each(["direct", "symlink-package", "opaque-import", "opaque-require"] as co
     }
     if (mode === "opaque-import") load = `await import(${JSON.stringify(payload)}.slice(0));`;
     if (mode === "opaque-require") load = `require(${JSON.stringify(payload)}.slice(0));`;
+    if (mode.startsWith("create-require")) {
+      const base =
+        mode === "create-require-forged-base" ? JSON.stringify(join(trusted, "other.ts")) : "import.meta.url";
+      let target = payload;
+      if (mode === "create-require-symlink") {
+        target = join(trusted, "runtime-alias.ts");
+        symlinkSync(payload, target);
+      }
+      load = `import {createRequire} from "node:module"; const load = createRequire(${base}); load(${JSON.stringify(target)});`;
+    }
     writeFileSync(module, `${load}\n${source}`);
 
-    await expect(adapterDescriptors(scope)).rejects.toThrow();
+    const discovery = adapterDescriptors(scope);
+    if (mode.startsWith("create-require"))
+      await expect(discovery).rejects.toThrow("Runtime adapter dependencies must be bundled");
+    else await expect(discovery).rejects.toThrow();
     expect(existsSync(marker)).toBe(false);
   },
 );
@@ -83,4 +104,41 @@ test("tool discovery bundles protected dependencies and builtins without binding
   const tools = await adapterDescriptors(scope);
   expect(tools.map((tool) => tool["name"])).toEqual(["dori_job_status", "dori_report_outcome"]);
   expect(readFileSync(marker, "utf8")).toBe("protected");
+});
+
+test("adapter discovery refuses asynchronous module initialization before loading workspace code", async () => {
+  const { f, trusted, module, scope, source } = await setup();
+  const marker = join(trusted, "async-executed");
+  const payload = join(f.spec.cwd, "async-payload.ts");
+  writeFileSync(payload, `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "escaped");`);
+  writeFileSync(
+    module,
+    `import {createRequire} from "node:module";
+await Promise.resolve();
+createRequire(import.meta.url)(${JSON.stringify(payload)});
+${source}`,
+  );
+
+  await expect(adapterDescriptors(scope)).rejects.toThrow();
+  expect(existsSync(marker)).toBe(false);
+});
+
+test("descriptor serialization cannot load workspace code outside the adapter policy", async () => {
+  const { f, trusted, module, scope, source } = await setup();
+  const marker = join(trusted, "descriptor-executed");
+  const payload = join(f.spec.cwd, "descriptor-payload.ts");
+  writeFileSync(payload, `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "escaped");`);
+  writeFileSync(
+    module,
+    `${source}
+import {createRequire} from "node:module";
+const load = createRequire(import.meta.url);
+Object.defineProperty(leadTools[0], "description", {enumerable:true, get() {
+  load(${JSON.stringify(payload)}); return "unreachable";
+}});`,
+  );
+  const discover = async () => JSON.stringify(await adapterDescriptors(scope));
+
+  await expect(discover()).rejects.toThrow("Runtime adapter dependencies must be bundled");
+  expect(existsSync(marker)).toBe(false);
 });
