@@ -1,5 +1,5 @@
 import { existsSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { appendQueue, readQueue } from "./inbox-files.ts";
+import { readQueue, rotateQueue, updateQueue } from "./inbox-files.ts";
 import type { Deps } from "./harness.ts";
 import type { MigrateOpts } from "./migrate-capture.ts";
 import { refText } from "./refs.ts";
@@ -44,14 +44,23 @@ async function underLocks(d: Deps, refs: readonly SessionRef[], opts: MigrateOpt
  * entry `dst` already holds (keyed by at+from+text) is not added again, so a re-run after a crash adds no duplicates.
  */
 function mergeFile(src: string, dst: string, map: (m: QueuedMessage) => QueuedMessage): void {
-  const aside = `${src}.merging`;
-  if (!existsSync(aside) && existsSync(src)) renameSync(src, aside);
-  const seen = new Set(readQueue(dst).map(keyOf));
-  for (const m of readQueue(aside)) {
-    if (seen.has(keyOf(m))) continue;
-    seen.add(keyOf(m));
-    appendQueue(dst, map(m));
-  }
+  const aside = rotateQueue(src);
+  if (!aside) return;
+  const incoming = readQueue(aside);
+  if (incoming.length)
+    updateQueue(dst, (current) => {
+      const seen = new Set(current.map(keyOf));
+      return [
+        ...current,
+        ...incoming
+          .filter((m) => {
+            if (seen.has(keyOf(m))) return false;
+            seen.add(keyOf(m));
+            return true;
+          })
+          .map(map),
+      ];
+    });
   rmSync(aside, { force: true });
 }
 

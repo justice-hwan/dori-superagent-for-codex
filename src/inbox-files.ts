@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { refFromText, sameSession } from "./refs.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import type { QueuedMessage } from "./store-types.ts";
+import { takeInboxLock } from "./inbox-lock.ts";
 
 // Inbox files: one JSONL queue per session. A herdr pane keeps the name it had before runtimes existed (`w1_p3.jsonl`),
 // so queues written by an older binary drain; every other runtime is prefixed (`hc--t7.jsonl`). A `.forward` file beside
@@ -32,7 +33,7 @@ export const inboxRefs = (root: string): SessionRef[] =>
     .filter((f) => f.endsWith(SUFFIX))
     .map(refOfFile);
 
-export function readQueue(path: string): QueuedMessage[] {
+function readUnlocked(path: string): QueuedMessage[] {
   if (!existsSync(path)) return [];
   return readFileSync(path, "utf8")
     .split("\n")
@@ -40,10 +41,59 @@ export function readQueue(path: string): QueuedMessage[] {
     .map((l) => JSON.parse(l) as QueuedMessage);
 }
 
-export const writeQueue = (path: string, msgs: readonly QueuedMessage[]): void =>
-  writeFileSync(path, msgs.map((m) => `${JSON.stringify(m)}\n`).join(""));
+/** Short synchronous file transactions, separate from the inbox lock held across delivery awaits. */
+function queueIO<T>(path: string, body: () => T): T {
+  let release = takeInboxLock(`${path}.io-lock`, Date.now());
+  while (!release) {
+    Bun.sleepSync(1);
+    release = takeInboxLock(`${path}.io-lock`, Date.now());
+  }
+  try {
+    return body();
+  } finally {
+    release();
+  }
+}
 
-export const appendQueue = (path: string, msg: QueuedMessage): void => appendFileSync(path, `${JSON.stringify(msg)}\n`);
+export const readQueue = (path: string): QueuedMessage[] =>
+  existsSync(path) ? queueIO(path, () => readUnlocked(path)) : [];
+
+function replaceQueue(path: string, msgs: readonly QueuedMessage[]): void {
+  const temporary = `${path}.${process.pid}.${crypto.randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, msgs.map((m) => `${JSON.stringify(m)}\n`).join(""), { mode: 0o600, flag: "wx" });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+/** Explicit replacement. Read/modify/write callers must use updateQueue instead. */
+export const writeQueue = (path: string, msgs: readonly QueuedMessage[]): void =>
+  queueIO(path, () => replaceQueue(path, msgs));
+
+export const updateQueue = (
+  path: string,
+  update: (messages: readonly QueuedMessage[]) => readonly QueuedMessage[],
+): QueuedMessage[] =>
+  queueIO(path, () => {
+    const next = [...update(readUnlocked(path))];
+    replaceQueue(path, next);
+    return next;
+  });
+
+export const appendQueue = (path: string, msg: QueuedMessage): void =>
+  queueIO(path, () => appendFileSync(path, `${JSON.stringify(msg)}\n`, { mode: 0o600 }));
+
+/** Rotating and appending share the same transaction so no writer retains the drained inode. */
+export const rotateQueue = (path: string): string | undefined =>
+  queueIO(path, () => {
+    const aside = `${path}.merging`;
+    if (existsSync(aside)) return aside;
+    if (!existsSync(path)) return undefined;
+    renameSync(path, aside);
+    return aside;
+  });
 
 /** The session this inbox was forwarded to, or undefined. */
 export function forwardOf(root: string, ref: SessionRef): SessionRef | undefined {
@@ -79,22 +129,22 @@ const keyOf = (m: QueuedMessage): string => `${m.at}\u0000${m.from}\u0000${m.tex
 export function mergeForwarded(root: string, ref: SessionRef): void {
   const into = inboxFile(root, ref);
   for (const old of forwardedInto(root, ref)) {
-    const aside = `${old}.merging`;
     for (let pass = 0; pass < 2; pass++) {
-      if (!existsSync(aside)) {
-        try {
-          renameSync(old, aside);
-        } catch (e) {
-          if ((e as NodeJS.ErrnoException).code === "ENOENT") break;
-          throw e;
-        }
-      }
-      const seen = new Set(readQueue(into).map(keyOf));
-      for (const m of readQueue(aside)) {
-        if (seen.has(keyOf(m))) continue;
-        seen.add(keyOf(m));
-        appendQueue(into, m);
-      }
+      const aside = rotateQueue(old);
+      if (!aside) break;
+      const incoming = readQueue(aside);
+      if (incoming.length)
+        updateQueue(into, (current) => {
+          const seen = new Set(current.map(keyOf));
+          return [
+            ...current,
+            ...incoming.filter((m) => {
+              if (seen.has(keyOf(m))) return false;
+              seen.add(keyOf(m));
+              return true;
+            }),
+          ];
+        });
       rmSync(aside, { force: true });
     }
   }

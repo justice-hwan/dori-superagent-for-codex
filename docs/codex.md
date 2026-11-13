@@ -118,6 +118,13 @@ An owned thread that was deleted does not stop healthy idle subscriptions.
 Review cancellation after transport loss rejoins the subscription and checks
 durable status for its known turn before interrupting or releasing ownership.
 
+Current queue readers, appenders, transforms and migration rotations share a
+short synchronous I/O transaction. It is separate from the delivery lock held
+across awaits, so senders can still append while a native turn is being admitted.
+Selected updates read and commit under that same transaction and replace JSONL
+atomically. Whole-queue replacement is reserved for explicit replacement; live
+recovery, settlement and identity assignment use transforms.
+
 `DORI_CODEX_SANDBOX` defaults to `workspace-write`; `read-only` is useful for
 bounded inspection. `DORI_CODEX_APPROVAL_POLICY` defaults to `on-request`.
 Native reviews always use a fresh read-only thread; their default deadline is

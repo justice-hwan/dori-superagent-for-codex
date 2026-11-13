@@ -10,6 +10,7 @@ import {
   mergeForwarded,
   readQueue,
   writeQueue,
+  updateQueue,
 } from "./inbox-files.ts";
 import { takeInboxLock } from "./inbox-lock.ts";
 import { refFromText, refText, sameSession } from "./refs.ts";
@@ -111,6 +112,14 @@ export class Store {
 
   saveInbox(ref: SessionRef, msgs: readonly QueuedMessage[]): void {
     writeQueue(this.inboxPath(ref), msgs);
+  }
+
+  /** The callback is synchronous; appenders cannot interleave its read and commit. */
+  updateInbox(
+    ref: SessionRef,
+    update: (messages: readonly QueuedMessage[]) => readonly QueuedMessage[],
+  ): QueuedMessage[] {
+    return updateQueue(this.inboxPath(ref), update);
   }
 
   /** The session this one's inbox was forwarded to by a migration (its `.forward` marker), or undefined. */

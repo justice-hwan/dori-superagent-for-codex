@@ -5,12 +5,14 @@ import type { QueuedMessage } from "../../src/store-types.ts";
 import type { SessionRef } from "../../src/runtime/types.ts";
 
 class CrashAtSettlement extends Store {
-  override saveInbox(ref: SessionRef, messages: readonly QueuedMessage[]): void {
-    if (messages.length === 0) {
-      if (process.argv[3] === "after") super.saveInbox(ref, messages);
-      process.exit(77);
-    }
-    super.saveInbox(ref, messages);
+  override updateInbox(ref: SessionRef, update: (messages: readonly QueuedMessage[]) => readonly QueuedMessage[]): QueuedMessage[] {
+    const next = super.updateInbox(ref, (messages) => {
+      const result = update(messages);
+      if (result.length === 0 && process.argv[3] !== "after") process.exit(77);
+      return result;
+    });
+    if (next.length === 0) process.exit(77);
+    return next;
   }
 }
 if (import.meta.main) {

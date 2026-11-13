@@ -94,8 +94,9 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   let all = d.store.queued(ref);
   if (all.length === 0) return "delivered";
   if (rt.kind === "codex" && all.some((message) => !message.deliveryId)) {
-    all = all.map((message) => ({ ...message, deliveryId: message.deliveryId ?? crypto.randomUUID() }));
-    d.store.saveInbox(ref, all);
+    all = d.store.updateInbox(ref, (current) =>
+      current.map((message) => ({ ...message, deliveryId: message.deliveryId ?? crypto.randomUUID() })),
+    );
   }
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
   // The probe carries the #62 screen check on herdr: an omo with live monitors between turns reads idle.
@@ -178,17 +179,18 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
 function settleInbox(d: Deps, ref: SessionRef, batch: readonly QueuedMessage[], attempt?: DeliveryAttempt): void {
   if (!attempt) for (const message of batch) confirmJob(d.store, ref, message.text);
   const left = [...batch];
-  const rest = d.store.queued(ref).flatMap((m) => {
-    const i = left.findIndex((b) =>
-      b.deliveryId && m.deliveryId
-        ? b.deliveryId === m.deliveryId
-        : b.at === m.at && b.from === m.from && b.text === m.text,
-    );
-    if (i < 0) return [m];
-    left.splice(i, 1);
-    return attempt ? [{ ...m, attempt }] : [];
-  });
-  d.store.saveInbox(ref, rest);
+  d.store.updateInbox(ref, (current) =>
+    current.flatMap((m) => {
+      const i = left.findIndex((b) =>
+        b.deliveryId && m.deliveryId
+          ? b.deliveryId === m.deliveryId
+          : b.at === m.at && b.from === m.from && b.text === m.text,
+      );
+      if (i < 0) return [m];
+      left.splice(i, 1);
+      return attempt ? [{ ...m, attempt }] : [];
+    }),
+  );
 }
 
 const NOTICE_FROM = "dori-delivery";

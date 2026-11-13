@@ -152,8 +152,8 @@ and a clean runtime environment:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 244 files passed.
-- Harness tests: **483 passed, 0 failed** across 58 files; 8 existing external
+- Source-size gate: 246 files passed.
+- Harness tests: **485 passed, 0 failed** across 59 files; 8 existing external
   hc/herdr end-to-end cases were automatically skipped because those binaries
   are absent from the isolated local test PATH. Their dedicated CI jobs remain
   required.
@@ -232,6 +232,26 @@ authority state or frozen execution installs. The accepted corrected-source
 autonomous proof at `61c2a58` remains applicable to the unchanged happy path:
 these cases were not exercised by that run. No desktop or timing gate was
 repeated.
+
+## Queue storage concurrency correction
+
+Independent review rejected `7f132b9` because a second process could still
+append after the recovery reread and before its whole-file rewrite. Real
+writer/appender subprocesses reproduce lost READY for both ack and resend in
+`/tmp/dori-queue-process-red.log`.
+
+Queue operations now share a short synchronous file transaction, distinct from
+the lock held across asynchronous delivery. Recovery, settlement and native
+message identity assignment transform the latest queue under that transaction.
+Appenders participate, writes replace JSONL atomically, and migration drains
+rotate under the same synchronization. The adapted sender-crash fixture retains
+both original crash boundaries at the new atomic storage owner.
+
+`/tmp/dori-queue-atomic-targeted.log` records 58 passes across nine owner suites,
+including both real two-process cases, native sender crashes and legacy
+forwarding/migration. This changes the exercised storage path, so readiness
+also requires a fresh bounded flow from the corrected immutable source.
+Earlier raw evidence remains preserved at its original scope.
 
 ## Autonomous lead acceptance
 
