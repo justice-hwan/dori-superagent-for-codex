@@ -10,11 +10,13 @@ Local regression tests are not proof of a connected dot. The actual account was 
 
 A separate native inspection of the existing dot's profile confirmed that this personal Mac already has access allowed and is online; its cloud computer is ready. No new computer permission is currently needed on that Mac. The new Dori skill invocation and MCP Events connection are still unverified.
 
-Real acceptance still requires a bounded request from the user's dot, the corresponding Codex lead job/outcome, a verified MCP Events subscription, a delivered event acknowledged by ChatGPT, and the resulting Dot task evidence. Do not call the integration connected until those artifacts exist.
+Native acceptance requires a bounded request from the user's dot, the corresponding Codex lead job/outcome, and evidence that the actual dot received the result of its local task. Custom MCP Events acceptance separately requires a verified subscription, acknowledged signed delivery, and the resulting Dot task evidence. Record which route was verified; neither route proves the other.
 
 ## Native request and status route
 
 Official Dots documentation supports local skills on a separately connected computer. This avoids a public MCP endpoint for submitting a request and reading its result.
+
+Dots can create local Work or Codex tasks and check results of tasks they created on the original computer. Use that supported native task relationship to test result delivery before requiring a public event endpoint. A completed local process alone does not prove the dot received its result.
 
 If access is not already allowed, open the dot's profile in the ChatGPT app, then **Computers**, choose this personal Mac, select **Allow**, and confirm **Allow access**. This is distinct from Codex computer access and Work Sync. Keep the computer online and ChatGPT open. The user must handle a new permission confirmation; do not request it again for an already authorized computer. Do not connect company computers for this personal setup.
 
@@ -30,6 +32,8 @@ The integration CLI accepts one JSON object on stdin:
 `request.json` contains `origin_id`, `request_id`, and `prompt`. Both identifiers are required, at most 128 characters each. The prompt is 1–8,000 characters. Repeated identical requests return the same job. Reusing the identity for a changed prompt is rejected.
 
 `status.json` contains `job_id`, using the `id` returned by submit. Returned status includes `state`, `admission`, `summary`, `thread_id`, and `revision`. Admission does not mean completion. A queued request may be waiting for desktop takeback. A held admission must be reconciled against the Dori inbox before any resend; automatic resubmission could duplicate work.
+
+These CLI examples describe host-side operations. Every CLI operation opens the configured private database; submit also invokes the runtime wrapper, and outcome delivery may wake a private socket. Computer access does not prove a sandboxed local task or lead can perform those operations. Use the administrator's confirmed role-bound management tools for any denied boundary. The constrained tool contract must fix the personal instance, configuration, executable and caller role outside model arguments; it must not expose a shell, arbitrary command, home or path. The integration's attachment to that trusted tool path is not yet verified.
 
 ## Configuration
 
@@ -81,7 +85,7 @@ Read status before writing; use the current revision plus one. States are `queue
 
 ## MCP Events route
 
-Request/status tools can also be published through MCP. Push notifications require the actual supported MCP Events connection; a local skill does not by itself wake a cloud Dot task.
+Request/status tools can also be published through MCP. Custom event push requires the actual supported MCP Events connection. Native task result delivery is a separate mechanism; installing a local skill alone proves neither kind of receipt.
 
 Install the integration's own dependencies:
 
@@ -117,11 +121,11 @@ ChatGPT may batch separately delivered events into a task run. Batching is confi
 
 1. Confirm the personal Codex lead is running from the reviewed landed core revision and desktop ownership is known.
 2. Have the actual dot submit a harmless bounded request through the connected personal computer or registered MCP tool. Record its origin/request IDs, durable job ID, Codex thread, and admission result.
-3. Ask that dot to monitor both events for the job, stating the desired response. Record real `events/subscribe` input identity, challenge success, granted subscription ID/expiration, without exposing its signing secret.
-4. Have the trusted lead emit a decision-needed update, then complete the bounded request. Record status and signed delivery receipts and inspect the actual Dot task response.
-5. Retry the identical request and confirm one job; attempt another subject's status and confirm denial. Check filtered/unsubscribed events do not wake the task. Verify desktop handoff queues or pauses requests rather than steering a user-owned turn.
-6. Stop monitoring and confirm unsubscribe. Account for temporary endpoints and stop bounded test processes.
+3. Have the trusted lead report an outcome through its confirmed typed tool. Read the durable status from the Dot-created local task and inspect the dot's actual response to that result. Record local task and lead thread IDs separately. Do not count a host CLI run as native receipt.
+4. Retry the identical request and confirm one job; attempt another subject's status and confirm denial. Verify desktop handoff queues or pauses requests rather than steering a user-owned turn.
+5. For the custom Events route, ask the dot to monitor both events for the job, stating the desired response. Record real `events/subscribe` input identity, challenge success, granted subscription ID/expiration, without exposing its signing secret. Have the trusted lead emit decision-needed and completion updates, then record signed delivery receipts and inspect the actual Dot task response. Check filtered/unsubscribed events do not wake the task.
+6. Stop custom event monitoring and confirm unsubscribe if it was configured. Account for temporary endpoints and stop bounded test processes. If the native route worked without an external endpoint, record that result and leave custom Events explicitly undeployed and unverified.
 
 Until those account-side artifacts exist, report the exact missing account/permission/deployment step and keep the lane waiting rather than claim READY.
 
-Primary protocol references: `https://learn.chatgpt.com/docs/dots`, `https://learn.chatgpt.com/docs/dots/computers-and-apps`, `https://developers.openai.com/plugins/build/mcp-events`, and `https://developers.openai.com/plugins/build/auth`.
+Primary protocol references: `https://learn.chatgpt.com/docs/dots`, `https://learn.chatgpt.com/docs/dots/computers-and-apps`, `https://learn.chatgpt.com/docs/dots/tasks-and-memory`, `https://developers.openai.com/plugins/build/mcp-events`, and `https://developers.openai.com/plugins/build/auth`.
