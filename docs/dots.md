@@ -51,7 +51,7 @@ These paths are operator configuration, not tool arguments. `runtimeHome` must n
 
 The CLI and server enforce directory mode `0700` and a restrictive umask; the server also enforces socket mode `0600`. It creates a lock file to prevent duplicate bridge processes. After an unclean shutdown, verify the prior process has exited before removing its stale lock/socket; never run competing bridge processes against one database. Back up the database together with its SQLite WAL according to normal SQLite backup practice. It contains request text and signing secrets and must not be committed or published.
 
-Use the administrator's verified standalone Bun 1.4.4 executable at a durable path for production. Do not depend on a temporary staging binary or silently use another version from PATH. The planned shared location is shown below; the administrator must verify it before production startup:
+Use the administrator's verified standalone Bun 1.4.4 executable at a durable path for production. Do not depend on a temporary staging binary or silently use another version from PATH. The shared location below was verified on November 13, 2026: it reports version 1.4.4 and its SHA-512 matches the verified staging binary. Check the configured executable on each installation before production startup:
 
 ```sh
 export BUN_BIN="$HOME/.local/share/dori/toolchains/bun/1.4.4/bin/bun"
