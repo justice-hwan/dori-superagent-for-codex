@@ -82,11 +82,20 @@ export async function releaseHeld(d: Deps, target: string, index: number, how: "
     if (m.attempt?.state !== "ambiguous")
       throw new Refusal(`entry ${index} of ${paneId} is not held; only held entries can be acked or resent`);
     await d.runtimes.for(ref).resolveDelivery?.(ref);
-    if (how === "ack") confirmJob(d.store, ref, m.text);
-    const { attempt: _, ...fresh } = m;
+    const current = d.store.queued(ref);
+    const selected = current.findIndex((entry, i) =>
+      m.deliveryId
+        ? entry.deliveryId === m.deliveryId
+        : i === index - 1 && entry.at === m.at && entry.from === m.from && entry.text === m.text,
+    );
+    const held = current[selected];
+    if (held?.attempt?.state !== "ambiguous")
+      throw new Refusal(`held entry ${index} of ${paneId} changed during recovery`);
+    if (how === "ack") confirmJob(d.store, ref, held.text);
+    const { attempt: _, ...fresh } = held;
     d.store.saveInbox(
       ref,
-      how === "ack" ? msgs.filter((_, i) => i !== index - 1) : msgs.map((x, i) => (i === index - 1 ? fresh : x)),
+      how === "ack" ? current.filter((_, i) => i !== selected) : current.map((x, i) => (i === selected ? fresh : x)),
     );
     return paneId;
   } finally {

@@ -71,7 +71,7 @@ export const runReview = async (
       stderr: turn["error"] ? JSON.stringify(turn["error"]) : "",
     };
   } catch (error) {
-    if (!turnId && !(error instanceof CodexError && error.kind === "remote")) {
+    if (!(error instanceof CodexError && error.kind === "remote")) {
       await connection.call("thread/resume", { threadId: id, excludeTurns: true });
       const page = object(
         await connection.call("thread/turns/list", {
@@ -83,9 +83,11 @@ export const runReview = async (
       );
       for (const value of array(page["data"])) {
         const turn = object(value);
-        if (array(turn["items"]).some((item) => object(item)["clientId"] === messageId)) {
+        if (
+          turnId ? turn["id"] === turnId : array(turn["items"]).some((item) => object(item)["clientId"] === messageId)
+        ) {
           turnId = text(turn["id"]);
-          finished = turn["status"] !== "inProgress";
+          finished = finished || turn["status"] !== "inProgress";
         }
       }
       if (!turnId)

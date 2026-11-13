@@ -152,8 +152,8 @@ and a clean runtime environment:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 241 files passed.
-- Harness tests: **470 passed, 0 failed** across 56 files; 8 existing external
+- Source-size gate: 244 files passed.
+- Harness tests: **483 passed, 0 failed** across 58 files; 8 existing external
   hc/herdr end-to-end cases were automatically skipped because those binaries
   are absent from the isolated local test PATH. Their dedicated CI jobs remain
   required.
@@ -210,6 +210,28 @@ Targeted green evidence is retained in
 post-settlement confirmation failures were also captured separately before
 their corrections. No native approval was answered, sandbox policy widened,
 shared daemon restarted or production instance launched during these fixes.
+
+## Additional formal boundary corrections
+
+Rereview of `61c2a58` accepted the previous corrections but found four more
+boundary failures. `/tmp/dori-second-formal-red.log` records 12 reproductions:
+five authority/snapshot placement cases (including symlinks), four concurrent
+held-message recovery cases, mixed missing/healthy subscription startup, and
+two known-turn review disconnect cases.
+
+The fixes validate resolved capability and snapshot directories against writable
+roots in both ancestor directions; reread and update the selected inbox identity
+after recovery waits; skip only confirmed missing threads during subscription
+refresh; and rejoin/reconcile known review turns before cancellation cleanup.
+Non-missing remote errors still propagate. The final targeted owner run records
+37 passes with no failures or errors in
+`/tmp/dori-second-formal-green-final.log`.
+
+Placement fixtures use child-only HOME directories and do not modify shared
+authority state or frozen execution installs. The accepted corrected-source
+autonomous proof at `61c2a58` remains applicable to the unchanged happy path:
+these cases were not exercised by that run. No desktop or timing gate was
+repeated.
 
 ## Autonomous lead acceptance
 

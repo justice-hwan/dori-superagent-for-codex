@@ -109,6 +109,15 @@ explicit inspection; it is never automatically replayed. Close, worker startup
 and handoff share the submission lock. `up` holds a per-home startup transaction
 lock across role checks, creation and registration.
 
+Bridge authority and code directories must not overlap a writable root in
+either direction. Capability and snapshot directories are checked after
+resolving symlinks. A workspace inside those directories is refused.
+Held-message recovery rereads the inbox after runtime acknowledgement and
+updates only its selected identity, retaining reports appended during the wait.
+An owned thread that was deleted does not stop healthy idle subscriptions.
+Review cancellation after transport loss rejoins the subscription and checks
+durable status for its known turn before interrupting or releasing ownership.
+
 `DORI_CODEX_SANDBOX` defaults to `workspace-write`; `read-only` is useful for
 bounded inspection. `DORI_CODEX_APPROVAL_POLICY` defaults to `on-request`.
 Native reviews always use a fresh read-only thread; their default deadline is

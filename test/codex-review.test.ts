@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
 import { fixture } from "./codex-fixture.test.ts";
+import { runReview } from "../src/runtime/codex/review.ts";
+import { CodexStore, type RecordEntry } from "../src/runtime/codex/store.ts";
+import { CodexConnection } from "../src/runtime/codex/protocol.ts";
 
 test("native review waits for completion and returns only assistant verdict text", async () => {
   const f = await fixture();
@@ -56,3 +59,41 @@ test("native review resolves a lost admission response from durable history befo
   expect([...f.threads.values()].map((thread) => thread.status.type)).toEqual(["idle"]);
   expect(f.calls.filter((method) => method === "turn/start")).toEqual(["turn/start"]);
 });
+
+test.each([false, true])(
+  "known review turn rejoins after disconnect before cancellation; completed=%s",
+  async (finished) => {
+    const f = await fixture();
+    const admitted = Promise.withResolvers<void>();
+    class ObservedStore extends CodexStore {
+      private pending = false;
+      override async save(entry: RecordEntry): Promise<void> {
+        await super.save(entry);
+        if (entry.uncertain) this.pending = true;
+        else if (this.pending) admitted.resolve();
+      }
+    }
+    const store = new ObservedStore(f.root);
+    const connection = new CodexConnection(f.env.DORI_CODEX_SOCKET);
+    f.cleanup.push(() => connection.disconnect());
+    const abort = new AbortController();
+    const pending = runReview(store, connection, f.env, "owned review", undefined, abort.signal).then(
+      (value) => ({ value }),
+      (error: unknown) => ({ error }),
+    );
+    const id = await f.started;
+    await admitted.promise;
+    const disconnected = Promise.withResolvers<void>();
+    connection.disconnections.add(() => disconnected.resolve());
+    f.dropClients();
+    await disconnected.promise;
+    if (finished) f.finish(id, "VERDICT: CLEAR");
+    abort.abort();
+    const result = await pending;
+
+    expect(result).toEqual({ value: { stdout: "", code: 1, stderr: "Codex review cancelled" } });
+    expect(await store.entries()).toEqual([]);
+    expect(f.calls.includes("thread/resume")).toBe(true);
+    expect(f.calls.filter((method) => method === "turn/interrupt")).toHaveLength(finished ? 0 : 1);
+  },
+);

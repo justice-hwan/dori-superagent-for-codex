@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { SessionRef } from "../types.ts";
 import { CodexError, object, type CodexConnection, type Notification } from "./protocol.ts";
 import { reference, type CodexStore } from "./store.ts";
+import { isMissingThreadError } from "./threads.ts";
 
 /** Each thread has its own pending callback; one slow lane never holds up another. */
 export const watchIdle = async (
@@ -43,7 +44,7 @@ export const watchIdle = async (
             if (object(object(response["thread"])["status"])["type"] === "idle") invoke(entry.id);
           } catch (error) {
             subscribed.delete(entry.id);
-            throw error;
+            if (!isMissingThreadError(error)) throw error;
           }
         }),
     );

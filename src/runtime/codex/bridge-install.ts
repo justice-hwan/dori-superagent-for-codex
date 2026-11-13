@@ -30,7 +30,7 @@ export const trustedPath = (path: string, cwd: string): string => {
   if (!isAbsolute(path)) throw new CodexError("ownership", "Bridge paths must be absolute");
   const real = realpathSync(path);
   const roots = [realpathSync(cwd), realpathSync(tmpdir()), realpathSync("/tmp")];
-  if (roots.some((root) => within(real, root)))
+  if (roots.some((root) => within(real, root) || within(root, real)))
     throw new CodexError(
       "ownership",
       "Bridge code, executable and home must be outside agent-writable workspace and temporary roots",
@@ -88,9 +88,10 @@ export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) 
   const base = join(homedir(), ".local/share/dori/codex-bridge");
   mkdirSync(base, { recursive: true, mode: 0o700 });
   trustedPath(base, cwd);
-  const installed = snapshot(base);
-  const capabilities = join(base, "capabilities");
-  mkdirSync(capabilities, { recursive: true, mode: 0o700 });
+  const installed = trustedPath(snapshot(base), cwd);
+  const capabilitiesPath = join(base, "capabilities");
+  mkdirSync(capabilitiesPath, { recursive: true, mode: 0o700 });
+  const capabilities = trustedPath(capabilitiesPath, cwd);
   const path = join(capabilities, `${crypto.randomUUID()}.json`);
   const scope = { root: home, cwd, role, key: spec.env["DORI_LANE"] || "", id: "" };
   writeFileSync(path, JSON.stringify(scope), { mode: 0o600, flag: "wx" });

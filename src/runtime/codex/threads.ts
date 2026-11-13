@@ -60,6 +60,11 @@ export const threadStatus = (value: unknown): AgentStatus => {
   }
 };
 
+export const isMissingThreadError = (error: unknown): boolean =>
+  error instanceof CodexError &&
+  error.kind === "remote" &&
+  /thread.*(?:not found|does not exist)|no thread.*found/i.test(error.message);
+
 export const probeThread = async (connection: CodexConnection, id: string): Promise<Probe> => {
   let thread: Record<string, unknown>;
   try {
@@ -70,12 +75,7 @@ export const probeThread = async (connection: CodexConnection, id: string): Prom
       thread = object(resumed["thread"]);
     }
   } catch (error) {
-    if (
-      error instanceof CodexError &&
-      error.kind === "remote" &&
-      /thread.*(?:not found|does not exist)|no thread.*found/i.test(error.message)
-    )
-      return { status: "gone", shellInFront: false };
+    if (isMissingThreadError(error)) return { status: "gone", shellInFront: false };
     throw error;
   }
   return {

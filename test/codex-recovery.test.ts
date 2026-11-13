@@ -1,5 +1,8 @@
 import { expect, onTestFinished, test } from "bun:test";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
+import { CodexConnection, CodexError } from "../src/runtime/codex/protocol.ts";
+import { CodexStore } from "../src/runtime/codex/store.ts";
+import { watchIdle } from "../src/runtime/codex/watch.ts";
 import type { SessionRef } from "../src/runtime/types.ts";
 import { fixture } from "./codex-fixture.test.ts";
 
@@ -93,4 +96,41 @@ test("sequential uncertain admissions on different threads do not poison a repla
   await f.rt.resolveDelivery(a);
 
   expect(await f.rt.deliver(a, "explicit resend")).toEqual({ kind: "delivered", started: true });
+});
+
+test("a deleted owned thread does not abort watch startup or healthy completion delivery", async () => {
+  const f = await fixture();
+  const missing = await f.rt.create(f.spec);
+  const healthy = await f.rt.create(f.spec);
+  f.threads.delete(missing.id);
+  await f.rt.deliver(healthy, "healthy work");
+  const completed = Promise.withResolvers<SessionRef>();
+  const result = await f.rt
+    .watchIdle(async (ref) => completed.resolve(ref))
+    .then(
+      (stop) => ({ stop }),
+      (error: unknown) => ({ error }),
+    );
+  if ("stop" in result && result.stop) f.cleanup.push(result.stop);
+  expect(result).not.toHaveProperty("error");
+  f.finish(healthy.id, "healthy result");
+  expect((await completed.promise).id).toBe(healthy.id);
+  expect(f.calls.filter((method) => method === "turn/start")).toEqual(["turn/start"]);
+});
+
+test("idle watch still rejects non-missing remote subscription failures", async () => {
+  const f = await fixture();
+  await f.rt.create(f.spec);
+  class DeniedConnection extends CodexConnection {
+    override async call(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+      if (method === "thread/resume") throw new CodexError("remote", "subscription permission denied");
+      return super.call(method, params);
+    }
+  }
+  const connection = new DeniedConnection(f.env.DORI_CODEX_SOCKET);
+  f.cleanup.push(() => connection.disconnect());
+  await expect(watchIdle(new CodexStore(f.root), connection, async () => {})).rejects.toMatchObject({
+    kind: "remote",
+    message: "subscription permission denied",
+  });
 });
