@@ -153,11 +153,13 @@ and runtime variables unset:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 252 files passed.
-- Harness tests: **517 passed, 0 failed** across 62 files.
+- Source-size gate: 253 files passed.
+- Harness tests: **527 passed, 0 failed** across 63 files.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
-The complete passing run is `/tmp/dori-runtime-loader-verified-ci.log`.
+The complete passing run is `/tmp/dori-adapter-exception-final-ci.log`.
+The preceding runtime-loader correction is recorded separately in
+`/tmp/dori-runtime-loader-verified-ci.log`.
 The earlier `7e8d246` native and static gates are recorded in
 `/tmp/dori-trust-corrections-separated-ci.log`. Its messenger subprocess inherited
 the operator's `DORI_HOME` and `DORI_RUNTIME=hc`, causing three unchanged
@@ -165,7 +167,7 @@ runtime-selection tests to fail. Only that stage was repeated with those
 variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
 392/0 result. No passed stage was repeated and no legacy test was changed.
 Earlier isolated runs skipped eight external hc/herdr cases because those
-binaries were absent from their test PATH; the latest run reports all 517
+binaries were absent from their test PATH; the latest run reports all 527
 harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -336,6 +338,27 @@ defer code loading until the surrounding host serializes them.
 with all existing tests retained. The accepted `7e8d246` native workflow,
 desktop continuation and timing evidence remains scoped to that head and its
 unchanged behavior; it was not relabelled or rerun for this adapter-only fix.
+
+Epoch 10 rejected local `11715f5` because adapter-thrown objects could defer
+workspace loading until MCP formatted their `message`, `toString()` or JSON
+data outside the execution policy. The installed stdio MCP server reproduced
+eight unsafe cases across discovery and async tool calls: seven loaded only a
+private marker fixture, and one crashed discovery. Two ordinary-error controls
+passed on the pre-fix owner.
+
+Core now awaits adapter execution inside the policy and converts every thrown
+value into a host-owned error carrying only primitive text. Failure formatting
+also remains inside the policy; if it throws or returns nontext data, the host
+receives a fresh constant diagnostic rather than the original object. Normal
+error messages remain intact. All ten transport cases preserve clean stdout,
+continue serving a subsequent ping and refuse workspace loading.
+
+The red evidence is `/tmp/dori-adapter-exception-red.log` and
+`/tmp/dori-adapter-exception-json-red.log`. The focused correction passed 29
+tests in `/tmp/dori-adapter-exception-green.log`; the complete final pipeline
+passed 527 harness and 392 messenger tests with zero failures. No native model
+acceptance, historical integration execution, desktop or timing gate was
+repeated for this exception-only boundary correction.
 
 ## Autonomous lead acceptance
 

@@ -168,6 +168,9 @@ module-resolution policy during entry evaluation, factory/tool calls, result
 serialization and close. Filesystem module loads through runtime aliases such
 as `createRequire()` are refused even when the compiler omitted them from its
 manifest. Static bundled dependencies and runtime builtins remain supported.
+Thrown failures are converted inside the policy into host-owned errors with
+primitive text messages, so MCP formatting cannot execute deferred adapter
+getters, string conversions or JSON callbacks outside the boundary.
 The lead can then use only `dori_job_status` and
 `dori_report_outcome`; the host derives its native thread identity.
 

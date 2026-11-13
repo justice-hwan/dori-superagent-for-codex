@@ -17,4 +17,18 @@ Bun.plugin({
   },
 });
 
-export const executeAdapter = <T>(entry: string, operation: () => T): T => execution.run(entry, operation);
+export const executeAdapter = <T>(entry: string, operation: () => T): Promise<Awaited<T>> =>
+  execution.run(entry, async (): Promise<Awaited<T>> => {
+    try {
+      return await operation();
+    } catch (error) {
+      let message: unknown;
+      try {
+        message = error instanceof Error ? error.message : String(error);
+      } catch {
+        // Even failure formatting can throw adapter-owned objects.
+        throw new Refusal("Adapter failure could not be formatted");
+      }
+      throw new Refusal(typeof message === "string" ? message : "Adapter failure message must be text");
+    }
+  });
