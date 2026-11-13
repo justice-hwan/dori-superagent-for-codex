@@ -4,6 +4,7 @@ import { refText } from "./refs.ts";
 import { Refusal } from "./refusal.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import { resolveTarget } from "./target.ts";
+import { confirmJob } from "./runtime/codex/bridge-jobs.ts";
 
 /**
  * `dori send --to-shell`: the operator's per-message opt-in to type this one message into a pane with no agent.
@@ -81,6 +82,7 @@ export async function releaseHeld(d: Deps, target: string, index: number, how: "
     if (m.attempt?.state !== "ambiguous")
       throw new Refusal(`entry ${index} of ${paneId} is not held; only held entries can be acked or resent`);
     await d.runtimes.for(ref).resolveDelivery?.(ref);
+    if (how === "ack") confirmJob(d.store, ref, m.text);
     const { attempt: _, ...fresh } = m;
     d.store.saveInbox(
       ref,

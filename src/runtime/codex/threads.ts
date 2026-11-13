@@ -18,10 +18,19 @@ export const instructions = (root: string, spec: CreateSpec, env: Environment): 
     .filter(([key]) => key === "DORI_HOME" || key === "DORI_RUNTIME" || key === "DORI_LANE")
     .map(([key, value]) => `${key}=${quote(value)}`)
     .join(" ");
+  const management =
+    env["DORI_CODEX_BRIDGE"] === "stdio"
+      ? `
+Use the dori MCP management tools for all harness operations. Do not run the CLI in sandboxed shell tools.
+For lead: dori_start takes key and brief CONTENT, with this session's fixed workspace; dori_send and dori_done take a lane key.
+For lane: dori_report and dori_ready apply only to your own lane; omit its key. dori_ready needs evidence.
+These typed tools replace CLI operations mentioned in role instructions or briefs. Ordinary task tools remain sandboxed.
+If dori_done refuses because the lane is still working, wait for its turn to finish, then use dori_status before closing.`
+      : "";
   return `This is a Dori ${spec.role} session. Tool environment: ${JSON.stringify(scope)}.
 Scoped CLI command prefix: ${scoped} ${scope.DORI_CMD}
 Run Dori CLI commands with these environment values. Use argv arrays, keep each argument separate,
-and pass user text as an argument rather than interpolating it into shell source.`;
+and pass user text as an argument rather than interpolating it into shell source.${management}`;
 };
 
 export const startParams = (root: string, spec: CreateSpec, env: Environment): Record<string, unknown> => ({

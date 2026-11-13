@@ -25,7 +25,11 @@ Example shell configuration:
 export DORI_HOME="$HOME/.dori-codex"
 export DORI_RUNTIME=codex
 export DORI_CODEX_MODEL=gpt-6.1-sol
+export BUN_BIN="$HOME/.local/share/dori/toolchains/bun/1.4.4/bin/bun"
 ```
+
+`BUN_BIN` must point to an installed, verified standalone Bun 1.4.4 executable;
+the path above is a per-user installation example, not an installer.
 
 Run `/bin/sh scripts/dori-codex.sh up --cwd /absolute/workspace` from this
 checkout after merge. The wrapper selects this source and Codex runtime,
@@ -38,6 +42,19 @@ and merge-gate commands remain the workflow. `up` opens lead/duty Codex threads
 and local duty/hourly workers; it refuses to duplicate live registered roles.
 The duty worker uses completion events for inbox flushing, with its normal
 periodic pass retained for reconciliation and nudges.
+
+The wrapper enables the constrained stdio management bridge. It installs a
+content-addressed source snapshot under `$HOME/.local/share/dori/codex-bridge`.
+The snapshot, harness home and Bun executable must be outside the task workspace
+and native temporary write roots; startup refuses an unsafe placement. Use a
+separate task workspace rather than your entire home directory.
+
+The lead uses `dori_start`, `dori_send`, `dori_status` and `dori_done`; a lane
+receives only `dori_report` and `dori_ready` for itself. These tools invoke trusted
+host lifecycle code with a fixed instance/workspace and role capability.
+Management tool calls receive scoped preauthorization; ordinary tools remain
+`workspace-write` and native approval requests remain with the desktop.
+Unrelated inherited MCP servers are disabled only on these managed threads.
 
 ## Desktop behavior
 
@@ -84,6 +101,29 @@ bounded inspection. `DORI_CODEX_APPROVAL_POLICY` defaults to `on-request`.
 Native reviews always use a fresh read-only thread; their default deadline is
 120 seconds, configurable with `DORI_CODEX_REVIEW_TIMEOUT_MS`. Cancellation
 interrupts only the review turn created by that invocation.
+
+Sandboxed tools cannot invoke the management CLI directly on the tested macOS
+daemon: socket access returned `EPERM`, including two exact-socket policy probes.
+The approved bridge resolves this through typed host tools while preserving the
+ordinary sandbox. Native role instructions select those tools instead of the
+CLI examples in generic upstream briefs. No raw daemon, shell, arbitrary path,
+home, cwd, session selection or approval proxy is exposed.
+
+## Optional outcome adapter
+
+An installed integration can provide `leadTools` descriptors and
+`createPersonalTools` through an operator-selected trusted module. Configure
+`codexBridgeAdapter` in the private harness `config.json` with absolute `module`
+and `configPath` paths and its fixed `instance`. Both paths must be outside
+agent-writable roots. The lead can then use only `dori_job_status` and
+`dori_report_outcome`; the host derives its native thread identity.
+
+Core reserves a recognized instance-scoped Dots job before inbox submission and
+permits outcomes only after confirmed native delivery or an explicit inbox
+acknowledgement. Queued, desktop-paused and ambiguous messages do not grant
+outcome authority. Correlation cannot move to another lead or different work.
+The integration owns its database, authentication, subscriptions and delivery;
+installing this core hook alone does not connect a native Dot or MCP Events.
 
 Terminal-to-Codex migration is not implemented. Start fresh threads with briefs
 and checkpoints rather than trying to resume a terminal agent's process.

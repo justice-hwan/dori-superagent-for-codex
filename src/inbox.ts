@@ -3,6 +3,7 @@ import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { resolveTarget } from "./target.ts";
 import { refText } from "./refs.ts";
+import { confirmJob, reserveJob } from "./runtime/codex/bridge-jobs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
 import { migrating } from "./store-journal.ts";
 import type { DeliveryAttempt, QueuedMessage } from "./store-types.ts";
@@ -29,6 +30,7 @@ export async function sendOrThrow(
   from: string,
 ): Promise<"DELIVERED" | "QUEUED"> {
   const ref = resolveTarget(d, target);
+  reserveJob(d.store, ref, text);
   d.store.enqueue(ref, { at: d.now(), from, text });
   return (await flushInbox(d, ref)) === "delivered" ? "DELIVERED" : "QUEUED";
 }
@@ -146,6 +148,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
 
 /** Re-reads the inbox and drops the batch (delivered) or marks it with the failed attempt; messages queued meanwhile stay. */
 function settleInbox(d: Deps, ref: SessionRef, batch: readonly QueuedMessage[], attempt?: DeliveryAttempt): void {
+  if (!attempt) for (const message of batch) confirmJob(d.store, ref, message.text);
   const left = [...batch];
   const rest = d.store.queued(ref).flatMap((m) => {
     const i = left.findIndex((b) => b.at === m.at && b.from === m.from && b.text === m.text);

@@ -42,21 +42,13 @@ shared live events through the same daemon. It does not establish that two
 independent app-server processes can safely write one thread concurrently.
 The backend must respect native busy turns and approval ownership.
 
-Measured external probe timings:
-
-| Observation | Elapsed |
-| --- | ---: |
-| Initialize acknowledgement | 5 ms |
-| Thread creation acknowledgement | 356 ms |
-| Turn admission acknowledgement | 172 ms |
-| First agent text from turn request | 4,769 ms |
-| Turn completion from turn request | 5,142 ms |
-| Desktop continuation server-reported duration | 4,471 ms |
-
-First-output and completion include server/model/network work; they are not
-pure local orchestration time. Desktop automation took additional interaction
-time, excluded from the model duration. No comparable historical baseline
-was collected and no old/new speedup is claimed.
+The initial timing artifact was overwritten by the desktop continuation callback.
+Both completed JSON files now describe turn
+`01a1d545-9c59-7101-a16b-43eefbbfe6e0`; their elapsed clock includes the human
+interaction interval. The previously reported initial timing numbers are
+unverified and withdrawn. The successful desktop gate remains supported by
+the inspected conversation and subsequent independent backend desktop trace.
+No successful desktop action was repeated to recover timing samples.
 
 Raw probe files and screenshots remain local because the desktop sidebar
 contains unrelated private conversation names. They must not be attached to a
@@ -130,6 +122,8 @@ Fresh-backend timings, rounded to milliseconds:
 Creation/admission measurements include local persistence and daemon RPCs.
 First text and complete-turn measurements include model, tools and network time.
 The desktop interaction pause is excluded from model durations.
+These are observations under shared-host load, not a controlled benchmark.
+No comparable historical baseline was collected and no old/new speedup is claimed.
 
 ## Actual up and workers
 
@@ -158,8 +152,11 @@ and a clean runtime environment:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 227 files passed.
-- Harness tests: **449 passed, 0 failed** across 51 files.
+- Source-size gate: 236 files passed.
+- Harness tests: **459 passed, 0 failed** across 53 files; 8 existing external
+  hc/herdr end-to-end cases were automatically skipped because those binaries
+  are absent from the isolated local test PATH. Their dedicated CI jobs remain
+  required.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -178,13 +175,81 @@ uncertainty now preserves the thread, registers a waiting lane or the role,
 and holds its initial input for explicit acknowledgement or resend. The
 generic terminal-start cleanup still closes sessions after known failures.
 
+## Autonomous lead acceptance
+
+The external API workflow above verifies transport and lifecycle behavior, not
+autonomous delegation. A separate bounded run used the unchanged `prompts/lead.md`
+through actual `up`, then submitted a task through the scoped wrapper's
+`send lead` command on stdin.
+
+Lead thread `01a1d591-79ae-73e3-a165-7208732bab72` read its role instructions,
+wrote `briefs/csv-audit.md`, and invoked the correct scoped wrapper's
+`start csv-audit --brief ... --cwd ...` itself. Its tool process failed to connect
+to the shared daemon socket. A direct diagnostic confirmed macOS `EPERM` under
+`workspace-write`. No lane was created, no result was calculated, and the lead
+correctly withheld a completion claim.
+
+Raw evidence is at `/tmp/dori-autonomous-QHDzUY/evidence.jsonl`. Immutable files
+ending `-raw-from-trace.json` preserve each observed turn, its thread/turn IDs,
+wall timestamps, monotonic elapsed timestamps and clock origin. This failed run
+did not capture initial admission or first text deltas; those timings are not
+inferred. The observer later received an unrelated probe's thread-start event
+and failed while attempting to resume it before its rollout existed. That
+observer error is separate from the earlier, independently recorded tool denial.
+All locally owned roles were closed; a subsequent process snapshot contained no
+process referencing the temporary home.
+
+Two narrower permission probes also failed: a legacy network-proxy configuration
+and an active named profile extending `:workspace`, with the exact socket
+allowlisted. Their thread-start responses and immutable completed-turn files are
+retained under `/tmp/dori-socket-policy-yz8W7R` and
+`/tmp/dori-socket-policy-mZZwOC`. The latter response confirms the named profile
+was selected; neither probe established working socket access.
+
+No global Codex configuration was changed and sandboxing was not disabled.
+The user subsequently approved the constrained management-tool bridge.
+
+A fixed stdio tool proved host placement before implementation: it wrote
+`host-placement.json` outside writable roots and reported daemon parent PID
+47337. An ordinary `workspace-write` tool was denied a write in the same
+directory. The traces are under `/tmp/dori-bridge-placement-3my5jK` and
+`/tmp/dori-bridge-placement-408C7T`; the host marker is
+`$HOME/.local/share/dori/bridge-placement-probe/host-placement.json`.
+Only the named management tool received preauthorization.
+
+The actual autonomous workflow then passed with exit 0. Its immutable trace is
+`$HOME/.local/share/dori/autonomous-home-ZOAEkn/evidence.jsonl`, with three
+completed-turn `*-raw.json` artifacts and `lead-transcript.txt` in that home.
+Each raw artifact contains thread/turn IDs, Unix wall milliseconds, observer
+monotonic elapsed milliseconds and the clock origin. Server-start events are
+labelled as observations, not local admission acknowledgements; initial native
+startup admission was not separately instrumented.
+
+The unchanged lead role on thread `01a1d5b8-f76d-7180-844d-494ae76d9419`
+called `dori_start` itself. Lane `01a1d5b9-4a8e-76d0-9b38-ecdc18f0aa91`
+read the CSV, calculated rows 3 and sum 89, wrote the compact result, and called
+`dori_report` and `dori_ready`. Those notifications stayed queued while the lead
+was busy. The lead inspected the recorded result using `dori_status`, read the
+result file, closed the idle lane through `dori_done`, and returned
+`AUTONOMOUS_LEAD_CONSUMED sum=89 rows=3`. This proves agent delegation and
+consumption rather than external orchestration of the lane.
+
+Observed management tool durations were: start 144 ms, report 9 ms, READY 5 ms,
+status 2-3 ms, done 10 ms. The bounded run took 76.2 seconds including model,
+tools and network work; it is not a controlled latency benchmark. The lane was
+`done`, both native roles were idle before local close, both workers were
+stopped, and a process snapshot contained no process referencing the home.
+No production roles were deployed and the passed desktop gate was not repeated.
+
 ## Limits
 
 Live Slack/Discord/Telegram login and message delivery were not attempted.
 Their current implementations and tests are retained. Native human approval
-and user-verification ceremonies were not manually exercised; protocol tests
-verify that the harness does not answer server requests, and blocked delivery
-does not interrupt a native turn. Read-only review completion and cancellation,
+and user-verification ceremonies were not manually exercised. Independent review
+used a separate file-free probe to confirm that numeric-ID approval and string-ID
+tool requests receive no harness response; that probe is not a committed regression
+test. Blocked-delivery regressions verify that delivery does not interrupt a native
+turn. Read-only review completion and cancellation,
 unloaded-thread recovery, explicit ambiguous-delivery recovery, worker ownership
 and subscription reconnect are covered by protocol/subprocess regressions.
 The backend does not promise simultaneous independent desktop/harness writers.

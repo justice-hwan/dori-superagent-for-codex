@@ -17,6 +17,7 @@ import type {
   SubmitResult,
 } from "../types.ts";
 import { NativeStartUncertain } from "../types.ts";
+import { prepareBridge } from "./bridge-install.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
 import { runReview } from "./review.ts";
@@ -34,7 +35,7 @@ export class CodexRuntime implements SessionRuntime {
 
   constructor(root: string, env?: Environment) {
     const inherited = env ?? process.env;
-    this.env = { ...inherited, DORI_CMD: env?.["DORI_CMD"] || defaultCommand };
+    this.env = { ...inherited, DORI_CMD: inherited["DORI_CMD"] || defaultCommand };
     this.store = new CodexStore(root);
     const socket =
       inherited["DORI_CODEX_SOCKET"] ||
@@ -55,12 +56,27 @@ export class CodexRuntime implements SessionRuntime {
 
   async create(spec: CreateSpec): Promise<SessionRef> {
     const worker = spec.role === "duty-loop" || spec.role === "hourly-loop";
-    const response = worker
-      ? undefined
-      : object(await this.connection.call("thread/start", startParams(this.store.root, spec, this.env)));
+    const bridge =
+      !worker && this.env["DORI_CODEX_BRIDGE"] === "stdio" ? prepareBridge(this.store.root, spec, this.env) : undefined;
+    const params = startParams(this.store.root, spec, this.env);
+    let response: Record<string, unknown> | undefined;
+    try {
+      response = worker
+        ? undefined
+        : object(
+            await this.connection.call("thread/start", {
+              ...params,
+              config: { ...object(params["config"]), ...bridge?.config },
+            }),
+          );
+    } catch (error) {
+      bridge?.discard();
+      throw error;
+    }
     const id = response ? text(object(response["thread"])["id"]) : `worker-${crypto.randomUUID()}`;
     const entry = { id, spec, closed: false };
     await this.store.save(entry);
+    bridge?.bind(id);
     if (!worker)
       await this.connection.call("thread/name/set", { threadId: id, name: `Dori ${spec.role}: ${spec.name}` });
     return reference(entry);

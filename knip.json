@@ -1,6 +1,7 @@
 {
   "$schema": "https://unpkg.com/knip@6/schema.json",
   "entry": [
+    "src/runtime/codex/bridge-server.ts",
     "skills/dori-mode/scripts/src/cli.ts",
     "test/**/*.test.ts",
     "skills/dori-mode/scripts/test/**/*.test.ts",
