@@ -13,7 +13,10 @@ test("native CLI submits one job, persists the lead outcome, and reads it after 
   await Bun.write(
     receiver,
     `import {appendFileSync} from "node:fs";
-    appendFileSync(${JSON.stringify(received)}, (await Bun.stdin.text())+"\\n");`,
+    const body=JSON.parse(await Bun.stdin.text());
+    appendFileSync(${JSON.stringify(received)}, JSON.stringify({
+      ...body, runtime_home:process.env.DORI_HOME, runtime:process.env.DORI_RUNTIME, bun_bin:process.env.BUN_BIN
+    })+"\\n");`,
   );
   await Bun.write(
     config,
@@ -22,6 +25,7 @@ test("native CLI submits one job, persists the lead outcome, and reads it after 
       directory: join(directory, "data"),
       principalFile: join(directory, "principals.json"),
       localPrincipal: "owner",
+      runtimeHome: join(directory, "core"),
       runtimeCommand: [process.execPath, receiver],
     }),
   );
@@ -58,7 +62,16 @@ test("native CLI submits one job, persists the lead outcome, and reads it after 
       revision: 1,
     });
     expect(await cli("submit", input)).toMatchObject({ id: submitted.id, state: "completed" });
-    expect((await Bun.file(received).text()).trim().split("\n")).toHaveLength(1);
+    const receipts = (await Bun.file(received).text())
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]).toMatchObject({
+      runtime_home: join(directory, "core"),
+      runtime: "codex",
+      bun_bin: process.execPath,
+    });
   } finally {
     rmSync(directory, { recursive: true });
   }

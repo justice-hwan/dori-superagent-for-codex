@@ -9,6 +9,7 @@ const Config = z
     oauth: z.object({ resource: z.url(), issuer: z.url(), jwksUrl: z.url() }).strict().optional(),
     principalFile: z.string().startsWith("/"),
     localPrincipal: z.string().min(1).max(128),
+    runtimeHome: z.string().startsWith("/"),
     runtimeCommand: z.array(z.string().min(1)).min(1),
     port: z.number().int().min(1024).max(65535).default(8766),
   })
@@ -21,6 +22,14 @@ export async function loadConfig() {
   if (!config.runtimeCommand[0]?.startsWith("/")) throw new BridgeError(-32001, "absolute_runtime_command_required");
   return {
     ...config,
+    runtimeCommand: [
+      "/usr/bin/env",
+      `DORI_HOME=${config.runtimeHome}`,
+      "DORI_RUNTIME=codex",
+      `BUN_BIN=${process.execPath}`,
+      "BUN_BE_BUN=1",
+      ...config.runtimeCommand,
+    ],
     configPath: path,
     database: resolve(config.directory, "dots.sqlite"),
     socket: resolve(config.directory, "wake.sock"),

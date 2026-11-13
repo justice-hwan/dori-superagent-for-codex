@@ -39,12 +39,13 @@ Create a private configuration file outside the repository and export its absolu
   "directory": "/absolute/private/personal-dots",
   "principalFile": "/absolute/private/personal-dots/principals.json",
   "localPrincipal": "PERSONAL_OAUTH_SUBJECT",
-  "runtimeCommand": ["/bin/sh", "/absolute/production-codex-home/dori.sh"],
+  "runtimeHome": "/absolute/private/personal-codex-home",
+  "runtimeCommand": ["/bin/sh", "/absolute/landed/repo/scripts/dori-codex.sh"],
   "port": 8766
 }
 ```
 
-These paths are operator configuration, not tool arguments. `runtimeCommand` must point to the confirmed production Codex wrapper from the landed core revision. Do not point it at the administrator's hc wrapper. The bridge invokes that fixed argv followed by `send`, `lead` and sends the JSON envelope on stdin. It never uses a shell to interpret the prompt.
+These paths are operator configuration, not tool arguments. `runtimeHome` must name the confirmed personal Codex home, and `runtimeCommand` must point to the production Codex wrapper from the landed core revision. Do not point either at the administrator's hc installation. The bridge explicitly pins `DORI_HOME`, `DORI_RUNTIME=codex`, and the current Bun executable for that child, overriding any ambient hc home. It invokes the fixed argv followed by `send`, `lead` and sends the JSON envelope on stdin. It never uses a shell to interpret the prompt.
 
 The CLI and server enforce directory mode `0700` and a restrictive umask; the server also enforces socket mode `0600`. It creates a lock file to prevent duplicate bridge processes. After an unclean shutdown, verify the prior process has exited before removing its stale lock/socket; never run competing bridge processes against one database. Back up the database together with its SQLite WAL according to normal SQLite backup practice. It contains request text and signing secrets and must not be committed or published.
 
