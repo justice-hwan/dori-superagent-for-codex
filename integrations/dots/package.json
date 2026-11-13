@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "bun server.ts",
+    "start:native": "bun native-server.ts",
     "test": "bun test . --timeout 15000",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },

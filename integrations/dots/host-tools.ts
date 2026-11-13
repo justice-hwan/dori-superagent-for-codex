@@ -18,7 +18,13 @@ const Binding = z.discriminatedUnion("role", [
     })
     .strict(),
 ]);
-const Options = z.object({ configPath: z.string().startsWith("/"), binding: Binding }).strict();
+const Options = z
+  .object({
+    configPath: z.string().startsWith("/"),
+    instance: z.string().min(1).max(128).optional(),
+    binding: Binding,
+  })
+  .strict();
 const ReportOutcome = Outcome.omit({ thread_id: true }).extend({
   state: z.enum(["running", "decision_needed", "completed", "failed"]),
 });
@@ -50,8 +56,9 @@ export const leadTools = [
 
 /** Only the trusted host supplies startup binding; model tool arguments never supply this object. */
 export async function createPersonalTools(options: z.infer<typeof Options>) {
-  const { configPath, binding } = Options.parse(options);
+  const { configPath, instance, binding } = Options.parse(options);
   const config = await loadConfig(configPath);
+  if (instance !== undefined && instance !== config.instance) throw new BridgeError(-32001, "instance_mismatch");
   const principal = Principal.parse(config.localPrincipal);
   process.umask(0o077);
   mkdirSync(config.directory, { recursive: true, mode: 0o700 });

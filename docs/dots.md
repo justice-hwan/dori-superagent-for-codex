@@ -10,6 +10,8 @@ Local regression tests are not proof of a connected dot. The actual account was 
 
 A separate native inspection of the existing dot's profile confirmed that this personal Mac already has access allowed and is online; its cloud computer is ready. No new computer permission is currently needed on that Mac. The new Dori skill invocation and MCP Events connection are still unverified.
 
+In the bounded native attempt on November 13, 2026 (UTC), the actual dot confirmed that computer connection but reported that its creation tool could not select or guarantee `workspace-write` before creating a local task. It therefore created no task and returned no task ID. Per-task attachment and native result receipt remain unverified; this observation is not a claim that every native host configuration lacks support.
+
 Native acceptance requires a bounded request from the user's dot, the corresponding Codex lead job/outcome, and evidence that the actual dot received the result of its local task. Custom MCP Events acceptance separately requires a verified subscription, acknowledged signed delivery, and the resulting Dot task evidence. Record which route was verified; neither route proves the other.
 
 ## Native request and status route
@@ -34,6 +36,31 @@ The integration CLI accepts one JSON object on stdin:
 `status.json` contains `job_id`, using the `id` returned by submit. Returned status includes `state`, `admission`, `summary`, `thread_id`, and `revision`. Admission does not mean completion. A queued request may be waiting for desktop takeback. A held admission must be reconciled against the Dori inbox before any resend; automatic resubmission could duplicate work.
 
 These CLI examples describe host-side operations. Every CLI operation opens the configured private database; submit also invokes the runtime wrapper, and outcome delivery may wake a private socket. Computer access does not prove a sandboxed local task or lead can perform those operations. Use the administrator's confirmed role-bound management tools for any denied boundary. The constrained tool contract must fix the personal instance, configuration, executable and caller role outside model arguments; it must not expose a shell, arbitrary command, home or path. The integration's attachment to that trusted tool path is not yet verified.
+
+## Per-task native stdio host
+
+`native-server.ts` exposes only `dori_submit_request` and `dori_job_status` over the official MCP stdio transport. The native host launches it with one absolute, protected startup capability path. It does not accept configuration, instance, principal, thread, role, command or environment in tool arguments.
+
+The operator's capability file contains:
+
+```json
+{
+  "role": "dot",
+  "thread_id": "VERIFIED_NATIVE_TASK_THREAD_ID",
+  "instance": "personal",
+  "configPath": "/absolute/private/personal-dots.json"
+}
+```
+
+Use a regular file with no group/other permissions, outside every writable root of that task. The server rejects public or symlinked capability files and an instance that differs from the configured database. Freeze the committed server source outside those writable roots as well; never attach a development checkout undergoing mutation tests.
+
+Core's confirmed attachment candidate uses the existing daemon's per-thread `thread/resume.config.mcp_servers` override. First have the actual dot create a harmless paused local task. The operator must correlate its native creation receipt, title, computer and task reference with an actual idle daemon thread, excluding all Dori and hc roles. If that correlation fails, stop at that limitation.
+
+The operator then attaches one uniquely named stdio server to that verified thread, using the verified Bun executable, frozen `native-server.ts`, and protected capability path. Enable only the two request/status tools and retain `workspace-write` for ordinary model tools. This is a native host attachment action, not a bridge tool that writes directly to app-server. No global plugin grant, public hosting or shell proxy is required for this candidate.
+
+The capability's thread ID scopes the server's startup identity. MCP `clientInfo`, tool metadata, `origin_id` and analytics fields are not proof that a task came from a Dot. Authority comes from the operator's verified per-thread attachment; the actual task must invoke the tool through its native owning surface. Local SDK tests prove transport behavior, not this live attachment or Dot receipt.
+
+After bounded acceptance, stop the task-owned server and disable only that unique attachment. Preserve native task history and unrelated plugin settings.
 
 ## Configuration
 
