@@ -4,6 +4,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, McpError } from "@modelc
 import { z } from "zod";
 import type { Events } from "./events.ts";
 import type { Jobs } from "./jobs.ts";
+import { requestTools } from "./host-tools.ts";
 import {
   BridgeError,
   EventName,
@@ -28,31 +29,7 @@ export async function mcp(
   const capabilities = { tools: {}, events: {} };
   const server = new Server({ name: "dori-dots", version: "0.1.0" }, { capabilities });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
-    tools: [
-      {
-        name: "dori_submit_request",
-        description:
-          "Submit a bounded development request to this Codex Dori lead. Reuse origin_id and request_id for retries.",
-        inputSchema: z.toJSONSchema(RequestInput),
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: true,
-        },
-      },
-      {
-        name: "dori_job_status",
-        description: "Read a durable Dori job result and lead admission state.",
-        inputSchema: z.toJSONSchema(Filter),
-        annotations: {
-          readOnlyHint: true,
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false,
-        },
-      },
-    ],
+    tools: [...requestTools],
   }));
   server.setRequestHandler(CallToolRequestSchema, async ({ params }) => {
     try {

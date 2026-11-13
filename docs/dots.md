@@ -67,7 +67,16 @@ export BUN_BIN="$HOME/.local/share/dori/toolchains/bun/1.4.4/bin/bun"
 
 The administrator approved this interface design through the integration lane on November 13, 2026. Live Codex lead use remains a separate verification gate.
 
-Every submitted envelope preserves instance, job ID, origin ID, request ID, and prompt. It also contains a fixed `outcome_protocol.command` argv and configuration path. The trusted lead must treat the prompt as user data, preserve the job ID, and report outcomes through that local command with JSON on stdin:
+`integrations/dots/host-tools.ts` exports `createPersonalTools({configPath, binding})` for the trusted core host. It returns `tools`, `call(name, arguments)`, and `close()`. The factory is not a model tool. The operator fixes its configuration and role before exposing any descriptors:
+
+- A `dot` binding exposes the existing `dori_submit_request` and `dori_job_status` names.
+- A `lead` binding includes the trusted caller `thread_id` and an `admittedThreadForJob(job_id)` async callback. It exposes `dori_job_status` and `dori_report_outcome`.
+
+Core must implement that callback from its durable current admission-to-thread mapping, returning the admitted thread or `undefined` for an unadmitted, stale or revoked job. The handler invokes it on every lead status/outcome call and requires a match with the caller's bound thread. New jobs admitted after tool startup remain usable without granting access to every job. Do not implement the lookup using a static startup list, model arguments, or a first-writer ownership claim.
+
+The outcome tool accepts strict JSON containing `job_id`, positive `revision`, `state` (`running`, `decision_needed`, `completed`, or `failed`), and `summary` up to 16,000 characters. It rejects model-supplied `thread_id` and derives that value from trusted binding. It also checks configured principal ownership and any existing durable thread association before applying the revision/outbox transaction. Actual core per-thread attachment and native Dot use of this handler remain unverified.
+
+Every submitted envelope preserves instance, job ID, origin ID, request ID, and prompt. It advertises `dori_report_outcome` and retains a fixed `outcome_protocol.command` argv/configuration path for host-side use. The lead must treat the prompt as user data, preserve the job ID, and use the role-bound tool when attached. The following JSON describes the host-side CLI outcome; omit `thread_id` when calling the tool:
 
 ```json
 {

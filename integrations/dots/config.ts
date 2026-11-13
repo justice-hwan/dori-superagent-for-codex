@@ -14,8 +14,7 @@ const Config = z
     port: z.number().int().min(1024).max(65535).default(8766),
   })
   .strict();
-export async function loadConfig() {
-  const path = process.env["DORI_DOTS_CONFIG"];
+export async function loadConfig(path = process.env["DORI_DOTS_CONFIG"]) {
   if (!path) throw new BridgeError(-32001, "DORI_DOTS_CONFIG_required");
   if (!path.startsWith("/")) throw new BridgeError(-32001, "absolute_config_path_required");
   const config = Config.parse(await Bun.file(path).json());
