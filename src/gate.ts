@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { prompt, type Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { loadHooks, substitute } from "./hooks.ts";
+import { CodexRuntime } from "./runtime/codex/index.ts";
+import { RuntimeChoiceError } from "./runtime/select.ts";
 import type { MergeOutcome } from "./telemetry.ts";
 
 export type PrRef = { repo: string; number: number; id: string };
@@ -40,7 +42,16 @@ export async function review(
   const [cmd, ...argv] = hook
     ? substitute(hook, { ...vars, text })
     : [d.agentCmd, "-p", "--no-session", ...(model ? ["--model", model] : []), text];
-  const res = await d.exec(cmd ?? d.agentCmd, argv);
+  let native = false;
+  try {
+    native = d.choice().kind === "codex";
+  } catch (e) {
+    if (!(e instanceof RuntimeChoiceError)) throw e;
+  }
+  const res =
+    !hook && native
+      ? await new CodexRuntime(d.store.root).runReview(text, model)
+      : await d.exec(cmd ?? d.agentCmd, argv);
   const verdicts = [...res.stdout.matchAll(/^VERDICT:\s*(CLEAR|BLOCK)\b/gm)];
   const last = verdicts.at(-1);
   if (!last) {

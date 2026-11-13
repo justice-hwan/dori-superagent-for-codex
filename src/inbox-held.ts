@@ -64,7 +64,7 @@ export function inboxList(d: Deps, target: string): { paneId: string; entries: I
  * Only held entries: a typed one is in the session's input already, and a queued one is delivered anyway. Runs under
  * the inbox lock, so a flush in progress cannot overwrite the change. Returns the session as refText.
  */
-export function releaseHeld(d: Deps, target: string, index: number, how: "ack" | "resend"): string {
+export async function releaseHeld(d: Deps, target: string, index: number, how: "ack" | "resend"): Promise<string> {
   const named = resolveTarget(d, target);
   const ref = d.store.forwardOf(named) ?? named;
   const paneId = refText(ref);
@@ -80,6 +80,7 @@ export function releaseHeld(d: Deps, target: string, index: number, how: "ack" |
       );
     if (m.attempt?.state !== "ambiguous")
       throw new Refusal(`entry ${index} of ${paneId} is not held; only held entries can be acked or resent`);
+    await d.runtimes.for(ref).resolveDelivery?.(ref);
     const { attempt: _, ...fresh } = m;
     d.store.saveInbox(
       ref,

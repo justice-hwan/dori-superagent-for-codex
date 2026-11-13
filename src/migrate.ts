@@ -110,6 +110,8 @@ async function agentSession(d: Deps, s: Subject, j: MigrateJournal | undefined, 
 }
 
 async function migrateName(d: Deps, name: string, from: SessionRef, opts: MigrateOpts, sub: () => Subject) {
+  if (from.runtime === "codex" || opts.to === "codex")
+    throw new Refusal("Codex desktop threads use handoff/takeback; terminal migration is not supported");
   const j = readJournal(d.store.root, name);
   if (j !== undefined && j.to !== opts.to)
     throw new Refusal(`a migration of ${name} is in progress toward ${j.to}; finish it with --to ${j.to}`);

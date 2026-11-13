@@ -29,6 +29,14 @@ describe("readRuntimeChoice precedence", () => {
   const both = pathWith("herdr", "hc");
   test.each([
     [
+      "explicit Codex beats inherited hc",
+      { DORI_RUNTIME: "codex", HC_TERMINAL_ID: "t3", PATH: both },
+      undefined,
+      "codex",
+      "env",
+    ],
+    ["Codex config works without terminal runtimes", { PATH: "" }, '{"runtime":"codex"}', "codex", "config"],
+    [
       "DORI_RUNTIME beats config and every detection",
       { DORI_RUNTIME: "hc", HERDR_PANE_ID: "w1:p1", PATH: both },
       '{"runtime":"herdr"}',

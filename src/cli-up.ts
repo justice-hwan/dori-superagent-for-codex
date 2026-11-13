@@ -4,8 +4,15 @@ import { shq } from "./delivery.ts";
 import { promptsDir, type Deps } from "./harness.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
-import { openSession, type SessionRef } from "./runtime/types.ts";
+import {
+  NativeStartUncertain,
+  openSession,
+  type AgentLaunch,
+  type CreateSpec,
+  type SessionRef,
+} from "./runtime/types.ts";
 import { RuntimeChoiceError } from "./runtime/select.ts";
+import type { Role } from "./store-types.ts";
 
 function renderPrompt(d: Deps, name: string): string {
   const dir = join(d.store.root, "prompts");
@@ -23,32 +30,60 @@ function renderPrompt(d: Deps, name: string): string {
  */
 export async function up(d: Deps, cwd: string): Promise<void> {
   const rt = d.runtimes.default;
+  if (rt.kind === "codex") {
+    for (const [role, ref] of Object.entries(d.store.roles())) {
+      if ((await d.runtimes.for(ref).probe(ref)).status !== "gone")
+        throw new RuntimeChoiceError(`${role} is already registered and live; use this home's existing roles`);
+    }
+  }
   const env = { DORI_HOME: d.store.root };
-  const agent = (name: string) => `${d.agentCmd} --append-system-prompt ${shq(renderPrompt(d, name))}`;
+  const openRole = (spec: CreateSpec & { readonly role: Role }, command: string | AgentLaunch) =>
+    openSession(rt, spec, command).catch((error: unknown) => {
+      if (error instanceof NativeStartUncertain) {
+        d.store.setRole(spec.role, error.ref);
+        if (typeof command !== "string")
+          d.store.enqueue(error.ref, {
+            at: d.now(),
+            from: "startup",
+            text: command.prompt,
+            attempt: { at: d.now(), state: "ambiguous", detail: error.message },
+          });
+      }
+      throw error;
+    });
+  const agent = (name: string) => {
+    const path = renderPrompt(d, name);
+    return rt.kind === "codex"
+      ? {
+          prompt: "Read your role instructions and acknowledge readiness. Wait for the next task.",
+          systemPrompt: readFileSync(path, "utf8"),
+        }
+      : `${d.agentCmd} --append-system-prompt ${shq(path)}`;
+  };
   // herdr ignores the group of a workspace-root session and reports the new workspace as the lead ref's group.
-  const lead = await openSession(
-    rt,
-    { name: "dori", role: "lead", container: "workspace-root", cwd, env: {}, group: groupId(d.store.root) },
+  const lead = await openRole(
+    {
+      name: "dori",
+      role: "lead",
+      container: "workspace-root",
+      cwd,
+      env: rt.kind === "codex" ? env : {},
+      group: groupId(d.store.root),
+    },
     agent("lead.md"),
   );
   d.store.setRole("lead", lead);
   const group = lead.group;
   const inGroup = group === undefined ? {} : { group };
-  const duty = await openSession(
-    rt,
-    { name: "duty", role: "duty", container: "tab", cwd, env, ...inGroup },
-    agent("duty.md"),
-  );
+  const duty = await openRole({ name: "duty", role: "duty", container: "tab", cwd, env, ...inGroup }, agent("duty.md"));
   d.store.setRole("duty", duty);
-  const loop = await openSession(
-    rt,
+  const loop = await openRole(
     { name: "duty-loop", role: "duty-loop", container: "split-below", near: duty, cwd, env, ...inGroup },
     `${d.doriCmd} duty --interval 60`,
   );
   d.store.setRole("duty-loop", loop);
   const hourlyEnv = rt.kind === "herdr" && group !== undefined ? { ...env, HERDR_WORKSPACE_ID: group } : env;
-  const hourly = await openSession(
-    rt,
+  const hourly = await openRole(
     { name: "hourly-loop", role: "hourly-loop", container: "split-below", near: loop, cwd, env: hourlyEnv, ...inGroup },
     `${d.doriCmd} loop`,
   );

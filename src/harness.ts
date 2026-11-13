@@ -6,6 +6,7 @@ import { memFreePct } from "./host.ts";
 import { type Exec, spawnExec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { HerdrRuntime } from "./runtime/herdr/index.ts";
+import { CodexRuntime } from "./runtime/codex/index.ts";
 import { Runtimes } from "./runtime/registry.ts";
 import { type RuntimeChoice, readRuntimeChoice } from "./runtime/select.ts";
 import { Store } from "./store.ts";
@@ -44,7 +45,16 @@ export const defaultDeps = (): Deps => {
       // The choice is made only when a NEW session is opened: a stored session's own runtime needs none.
       runtimes ??= new Runtimes(
         () => choice().kind,
-        (k) => (k === "hc" ? new HcRuntime(spawnExec) : new HerdrRuntime(spawnExec, process.env["DORI_HERDR_SESSION"])),
+        (k) => {
+          switch (k) {
+            case "hc":
+              return new HcRuntime(spawnExec);
+            case "herdr":
+              return new HerdrRuntime(spawnExec, process.env["DORI_HERDR_SESSION"]);
+            case "codex":
+              return new CodexRuntime(store.root);
+          }
+        },
       );
       return runtimes;
     },
@@ -52,7 +62,12 @@ export const defaultDeps = (): Deps => {
     exec: spawnExec,
     now: Date.now,
     agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
-    doriCmd: process.env["DORI_CMD"] ?? `DORI_HOME=${shq(store.root)} bun ${shq(CLI)}`,
+    get doriCmd() {
+      return (
+        process.env["DORI_CMD"] ??
+        `DORI_HOME=${shq(store.root)}${choice().kind === "codex" ? " DORI_RUNTIME=codex" : ""} bun ${shq(CLI)}`
+      );
+    },
     host: () => ({ load1: loadavg()[0] ?? 0, cores: cpus().length, memFreePct: memFreePct() }),
     usage: new Telemetry(store.root),
   };

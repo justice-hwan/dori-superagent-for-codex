@@ -12,7 +12,7 @@ export class ConfigError extends Error {}
 
 // A record keyed by kind, so a new RuntimeKind cannot be left out here. Key order is not a preference: PATH detection
 // asks for hc first, then herdr, whatever order the keys or the PATH entries have.
-const KIND_SET: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
+const KIND_SET: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true, codex: true };
 const KINDS = Object.keys(KIND_SET) as RuntimeKind[];
 const isKind = (value: unknown): value is RuntimeKind => KINDS.some((k) => k === value);
 
@@ -48,7 +48,7 @@ function configRuntime(configPath: string): RuntimeKind | undefined {
   if (!("runtime" in parsed)) return undefined;
   const value: unknown = parsed.runtime;
   if (!isKind(value))
-    throw new ConfigError(`${configPath}: "runtime" must be "herdr" or "hc", got ${JSON.stringify(value)}`);
+    throw new ConfigError(`${configPath}: "runtime" must be "herdr" or "hc" or "codex", got ${JSON.stringify(value)}`);
   return value;
 }
 
@@ -70,7 +70,8 @@ export function readRuntimeChoice(options: {
   const { env, configPath } = options;
   const fromEnv = nonEmpty(env["DORI_RUNTIME"]);
   if (fromEnv !== undefined) {
-    if (!isKind(fromEnv)) throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc", got ${JSON.stringify(fromEnv)}`);
+    if (!isKind(fromEnv))
+      throw new ConfigError(`DORI_RUNTIME must be "herdr" or "hc" or "codex", got ${JSON.stringify(fromEnv)}`);
     return { kind: fromEnv, source: "env" };
   }
   const fromConfig = configRuntime(configPath);

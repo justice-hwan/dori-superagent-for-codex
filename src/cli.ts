@@ -13,8 +13,9 @@ import { Refusal } from "./refusal.ts";
 import { runMigrate } from "./migrate.ts";
 import { refText } from "./refs.ts";
 import { ConfigError as RuntimeConfigError, RuntimeChoiceError } from "./runtime/select.ts";
-import { parseRef } from "./runtime/types.ts";
+import { NativeStartUncertain, parseRef } from "./runtime/types.ts";
 import type { Role } from "./store-types.ts";
+import { resolveTarget } from "./target.ts";
 
 const COMMANDS = new Set([
   "up",
@@ -32,6 +33,8 @@ const COMMANDS = new Set([
   "loop",
   "backlog",
   "migrate",
+  "handoff",
+  "takeback",
 ]);
 
 /** Prints the line for a delivery that did not land now and returns the exit code: HELD 3, everything else 0. */
@@ -109,13 +112,22 @@ export async function main(argv: readonly string[], d: Deps = defaultDeps()): Pr
       }
       if (x === "ack" || x === "resend") {
         const index = Number(need(a.pos[3], "entry index (see dori inbox list)"));
-        const paneId = releaseHeld(d, target, index, x);
+        const paneId = await releaseHeld(d, target, index, x);
         console.log(
           x === "ack" ? `ACKED ${paneId} ${index}` : `RELEASED ${paneId} ${index}: the next flush delivers it`,
         );
         return 0;
       }
       throw new Refusal(`unknown inbox command ${x}\n\n${USAGE}`);
+    }
+    case "handoff":
+    case "takeback": {
+      const ref = resolveTarget(d, need(x, "target"));
+      const rt = d.runtimes.for(ref);
+      if (!rt.handoff) throw new Refusal(`${rt.kind} does not support Codex desktop handoff`);
+      await rt.handoff(ref, cmd === "handoff");
+      console.log(`${cmd === "handoff" ? "DESKTOP" : "HARNESS"} ${refText(ref)}`);
+      return 0;
     }
     case "duty":
       return runDuty(d, a, x);
@@ -157,12 +169,13 @@ if (import.meta.main) {
         e instanceof Refusal ||
         e instanceof ConfigError ||
         e instanceof RuntimeConfigError ||
-        e instanceof RuntimeChoiceError
+        e instanceof RuntimeChoiceError ||
+        e instanceof NativeStartUncertain
       )
     )
       throw e;
     console.error(e.message);
-    code = 2;
+    code = e instanceof NativeStartUncertain ? 3 : 2;
   } finally {
     await hooksSettled();
     await deps.usage.flush(2000);

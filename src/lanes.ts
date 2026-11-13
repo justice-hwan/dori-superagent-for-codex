@@ -7,7 +7,7 @@ import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
-import { openSession } from "./runtime/types.ts";
+import { NativeStartUncertain, openSession } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
 
 export async function startLane(
@@ -36,11 +36,16 @@ export async function startLane(
     (self?.runtime === rt.kind ? self.group : undefined) ??
     (rt.kind === "herdr" ? await rt.createGroup("dori", cwd) : groupId(d.store.root));
   const kickoff = `Read your brief at ${briefPath} and execute it. Your lane key is ${key}.`;
+  let uncertain: NativeStartUncertain | undefined;
   const ref = await openSession(
     rt,
     { name: key, role: "lane", container: "tab", cwd, env: { DORI_LANE: key, DORI_HOME: d.store.root }, group },
-    `${d.agentCmd} ${shq(kickoff)}`,
-  );
+    rt.kind === "codex" ? { prompt: kickoff } : `${d.agentCmd} ${shq(kickoff)}`,
+  ).catch((error: unknown) => {
+    if (!(error instanceof NativeStartUncertain)) throw error;
+    uncertain = error;
+    return error.ref;
+  });
 
   const now = d.now();
   const lane: Lane = {
@@ -50,13 +55,23 @@ export async function startLane(
     tabId: ref.container ?? "",
     brief: briefPath,
     cwd,
-    status: "working",
+    status: uncertain ? "waiting" : "working",
     createdAt: now,
     lastActivityAt: now,
     nudges: 0,
     log: [{ at: now, kind: "start", text: briefFile }],
   };
   d.store.saveLane(lane);
+  if (uncertain) {
+    d.store.enqueue(ref, {
+      at: now,
+      from: "startup",
+      text: kickoff,
+      attempt: { at: now, state: "ambiguous", detail: uncertain.message },
+    });
+    await settled(tellLead(d, `[START ${key} WAITING] ${uncertain.message}`, key));
+    throw uncertain;
+  }
   await tellLead(d, `[START ${key}] lane opened in ${refText(ref)}`, key);
   const open = d.store.lanes().filter((l) => l.status === "working" || l.status === "waiting").length;
   d.usage.record({ name: "dori.lane_started", open_lanes: Math.min(open, 1000) });

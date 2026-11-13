@@ -34,6 +34,11 @@ export class Runtimes {
    * hc terminal, else `HERDR_PANE_ID` a herdr pane (grouped by `HERDR_WORKSPACE_ID` when set). Builds no runtime.
    */
   selfAny(env: Readonly<Record<string, string | undefined>>): SessionRef | undefined {
+    const thread =
+      nonEmpty(env["DORI_CODEX_WORKER"]) ??
+      nonEmpty(env["DORI_CODEX_THREAD_ID"]) ??
+      (env["DORI_RUNTIME"] === "codex" ? nonEmpty(env["CODEX_THREAD_ID"]) : undefined);
+    if (thread !== undefined) return { runtime: "codex", id: thread };
     const terminal = nonEmpty(env["HC_TERMINAL_ID"]);
     if (terminal !== undefined) return { runtime: "hc", id: terminal };
     const pane = nonEmpty(env["HERDR_PANE_ID"]);

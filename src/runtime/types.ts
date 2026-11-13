@@ -1,4 +1,4 @@
-export type RuntimeKind = "herdr" | "hc";
+export type RuntimeKind = "herdr" | "hc" | "codex";
 /** One session as its runtime addresses it. `group`: the herdr workspace id or the hc dori.group label. `container`: the herdr tab id (absent on hc). */
 export type SessionRef = {
   readonly runtime: RuntimeKind;
@@ -58,6 +58,19 @@ export type Key = "enter" | "escape";
 export type CloseScope = "session" | "container";
 /** `unwrapped`: a line the terminal wrapped over several rows comes back as one line, not one line per row. */
 export type ReadOptions = { readonly unwrapped?: boolean };
+/** A native agent turn. Shell runtimes retain their existing command contract. */
+export type AgentLaunch = { readonly prompt: string; readonly systemPrompt?: string };
+/** The session exists and its initial turn may already be running. Never close or recreate it automatically. */
+export class NativeStartUncertain extends Error {
+  readonly kind = "uncertain";
+  constructor(
+    readonly ref: SessionRef,
+    detail: string,
+  ) {
+    super(`Startup held for ${ref.runtime}:${ref.id}: ${detail}. Inspect desktop history before retrying.`);
+    this.name = "NativeStartUncertain";
+  }
+}
 export interface SessionRuntime {
   readonly kind: RuntimeKind;
   /** The caller's own session from the runtime's env (HERDR_PANE_ID + HERDR_WORKSPACE_ID / HC_TERMINAL_ID), or undefined. */
@@ -68,6 +81,11 @@ export interface SessionRuntime {
   create(spec: CreateSpec): Promise<SessionRef>;
   /** herdr: `pane run <id> <command>`. hc: `send <id> <command>` into the shell (no --if: a shell reports no status). */
   start(ref: SessionRef, command: string): Promise<void>;
+  startAgent?(ref: SessionRef, launch: AgentLaunch): Promise<void>;
+  /** Operator acknowledgement after inspecting an uncertain submission. */
+  resolveDelivery?(ref: SessionRef): Promise<void>;
+  /** Pause harness admission for desktop control, or reclaim an idle thread. */
+  handoff?(ref: SessionRef, toDesktop: boolean): Promise<void>;
   list(filter?: { readonly group?: string }): Promise<readonly SessionInfo[]>;
   probe(ref: SessionRef): Promise<Probe>;
   /** herdr: `pane read --source recent` (`recent-unwrapped` when unwrapped). hc: `read`; unwrapped joins rows as wide as the terminal's `cols`. */
@@ -88,7 +106,11 @@ const BARE_HERDR = /^w[0-9A-Za-z]+:p[0-9A-Za-z]+$/;
  * `t1b`, `t2h`). Another machine's `<machine>/<address>` is not a ref: the id names the session's inbox file.
  */
 const HC_ADDRESS = /^t[0-9a-z]+$/;
-const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = { herdr: BARE_HERDR, hc: HC_ADDRESS };
+const ID_SHAPES: Readonly<Record<RuntimeKind, RegExp>> = {
+  herdr: BARE_HERDR,
+  hc: HC_ADDRESS,
+  codex: /^(?:worker-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+};
 const KINDS = Object.keys(ID_SHAPES) as RuntimeKind[];
 
 /** "herdr:w1:p3", "hc:t7", bare "w1:p3" (herdr). A bare "t7" is NOT a ref (it is a legal lane key); undefined otherwise. */
@@ -105,20 +127,20 @@ export const formatRef: (ref: SessionRef) => string = (ref) => `${ref.runtime}:$
  * create + start in one call (the root harness path). A start that fails closes the session create just made (scope
  * "session"), so no idle shell is left behind, and rethrows the start error; a close that fails too is one stderr line.
  */
-export const openSession: (rt: SessionRuntime, spec: CreateSpec, command: string) => Promise<SessionRef> = async (
-  rt,
-  spec,
-  command,
-) => {
-  const ref = await rt.create(spec);
-  try {
-    await rt.start(ref, command);
-  } catch (e) {
-    await rt.close(ref, "session").catch((closeError: unknown) => {
-      const why = closeError instanceof Error ? closeError.message : String(closeError);
-      process.stderr.write(`dori: could not close ${formatRef(ref)} after its start failed (${why})\n`);
-    });
-    throw e;
-  }
-  return ref;
-};
+export const openSession: (rt: SessionRuntime, spec: CreateSpec, command: string | AgentLaunch) => Promise<SessionRef> =
+  async (rt, spec, command) => {
+    const ref = await rt.create(spec);
+    try {
+      if (typeof command === "string") await rt.start(ref, command);
+      else if (rt.startAgent) await rt.startAgent(ref, command);
+      else throw new TypeError(`${rt.kind} does not support native agent launches`);
+    } catch (e) {
+      if (e instanceof NativeStartUncertain) throw e;
+      await rt.close(ref, "session").catch((closeError: unknown) => {
+        const why = closeError instanceof Error ? closeError.message : String(closeError);
+        process.stderr.write(`dori: could not close ${formatRef(ref)} after its start failed (${why})\n`);
+      });
+      throw e;
+    }
+    return ref;
+  };

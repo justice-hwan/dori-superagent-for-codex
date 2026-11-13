@@ -23,7 +23,7 @@ export type GuardThresholds = {
 
 export type DoriConfig = {
   /** Where new sessions open; absent = detected (see run.ts runtimeChoice). */
-  readonly runtime?: RuntimeKind;
+  readonly runtime?: Exclude<RuntimeKind, "codex">;
   readonly stateDir: string;
   readonly laneWorkspace: string;
   readonly workspaces: readonly string[];
@@ -108,7 +108,7 @@ const repoIdentities = (value: unknown): Record<string, CommitIdentity> =>
 
 export class ConfigError extends Error {}
 
-const RUNTIMES: Readonly<Record<RuntimeKind, true>> = { herdr: true, hc: true };
+const RUNTIMES: Readonly<Record<Exclude<RuntimeKind, "codex">, true>> = { herdr: true, hc: true };
 const checkRuntime = (value: unknown): void => {
   if (value !== undefined && !(typeof value === "string" && Object.hasOwn(RUNTIMES, value)))
     throw new ConfigError(

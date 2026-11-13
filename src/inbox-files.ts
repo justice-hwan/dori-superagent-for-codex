@@ -10,15 +10,17 @@ import type { QueuedMessage } from "./store-types.ts";
 // entries an older writer still appends to the old file are merged into it by the next flush.
 
 const HC_PREFIX = "hc--";
+const CODEX_PREFIX = "codex--";
 const SUFFIX = ".jsonl";
 
 export function inboxFile(root: string, ref: SessionRef): string {
-  const name = ref.runtime === "herdr" ? ref.id.replaceAll(":", "_") : `${HC_PREFIX}${ref.id}`;
+  const name = ref.runtime === "herdr" ? ref.id.replaceAll(":", "_") : `${ref.runtime}--${ref.id}`;
   return join(root, "inbox", `${name}${SUFFIX}`);
 }
 
 function refOfFile(name: string): SessionRef {
   const stem = name.slice(0, -SUFFIX.length);
+  if (stem.startsWith(CODEX_PREFIX)) return { runtime: "codex", id: stem.slice(CODEX_PREFIX.length) };
   return stem.startsWith(HC_PREFIX)
     ? { runtime: "hc", id: stem.slice(HC_PREFIX.length) }
     : { runtime: "herdr", id: stem.replaceAll("_", ":") };

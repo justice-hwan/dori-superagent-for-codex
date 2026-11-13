@@ -5,6 +5,8 @@ import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { HOUR, loopTick, msUntilNext, summary } from "./loop.ts";
 import { acquire, release } from "./loop-lock.ts";
+import { CodexRuntime } from "./runtime/codex/index.ts";
+import { flushInbox } from "./inbox.ts";
 
 export async function runDuty(d: Deps, a: Args, x: string | undefined): Promise<number> {
   if (x === "stop") {
@@ -31,7 +33,14 @@ export async function runDuty(d: Deps, a: Args, x: string | undefined): Promise<
   const lock = d.store.lockPath("duty");
   const held = acquire(d, lock);
   if ("holder" in held) throw new Refusal(`another duty loop runs in this home (${held.holder})`);
+  let stopWatching: (() => void) | undefined;
   try {
+    const rt = d.runtimes.default;
+    if (rt instanceof CodexRuntime && !one(a, "once")) {
+      stopWatching = await rt.watchIdle(async (ref) => {
+        if (!d.store.stop("duty")) await flushInbox(d, ref);
+      });
+    }
     for (;;) {
       for (const e of await dutyTick(d))
         console.log(`DUTY ${[e.lane ?? e.pane, e.action].filter(Boolean).join(" ")}${e.detail ? `: ${e.detail}` : ""}`);
@@ -39,6 +48,7 @@ export async function runDuty(d: Deps, a: Args, x: string | undefined): Promise<
       await Bun.sleep(interval);
     }
   } finally {
+    stopWatching?.();
     release(d, held.nonce, lock);
   }
   return 0;

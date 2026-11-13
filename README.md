@@ -4,6 +4,14 @@
 
 # Dori
 
+This Codex fork is rebuilt from upstream
+`49fba4dc081c9238f01e617b2fd17f548438e624`. The
+[Codex setup guide](docs/codex.md) explains the native app-server backend,
+desktop continuation, ownership and approvals. The
+[rebuild evidence](docs/codex-rebuild-evidence.md) records the live desktop gate,
+cleanup and observed timings. The current upstream harness and messenger
+sources and Sustainable Use License are retained.
+
 Your 24/7 engineer, in the chat you already use.
 
 English | [简体中文](README.zh.md) | [Deutsch](README.de.md) | [日本語](README.ja.md) | [Italiano](README.it.md)

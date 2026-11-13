@@ -4,7 +4,7 @@ import { HerdrRuntime } from "../../../../src/runtime/herdr/index.ts";
 import { Runtimes } from "../../../../src/runtime/registry.ts";
 import { type RuntimeChoice, readRuntimeChoice } from "../../../../src/runtime/select.ts";
 import type { RuntimeKind, SessionRuntime } from "../../../../src/runtime/types.ts";
-import { configPath, type DoriConfig } from "./config.ts";
+import { ConfigError, configPath, type DoriConfig } from "./config.ts";
 
 export type Ran = { readonly code: number; readonly out: string; readonly err: string };
 export type RunOptions = { readonly cwd?: string; readonly timeoutMs?: number; readonly preserveOutput?: boolean };
@@ -74,7 +74,10 @@ export class ChosenRuntimes extends Runtimes {
 export const runtimeChoice = (config: Pick<DoriConfig, "runtime">, env: Env): RuntimeChoice => {
   const fromEnv = env["DORI_RUNTIME"];
   if (!fromEnv && config.runtime !== undefined) return { kind: config.runtime, source: "config" };
-  return readRuntimeChoice({ env, configPath: configPath() });
+  const choice = readRuntimeChoice({ env, configPath: configPath() });
+  if (choice.kind === "codex")
+    throw new ConfigError("Codex is a harness runtime; the messenger session launcher supports herdr or hc");
+  return choice;
 };
 
 /** Every runtime behind the skill's Runner, so tests swap the binaries for a recorder; sleeps go through the clock. */
@@ -91,6 +94,9 @@ export const runtimesFor = (
   const make: Record<RuntimeKind, () => SessionRuntime> = {
     herdr: () => new HerdrRuntime(exec, env["DORI_HERDR_SESSION"], { env, sleep: clock.sleep }),
     hc: () => new HcRuntime(exec, { env, sleep: clock.sleep }),
+    codex: () => {
+      throw new ConfigError("Codex sessions must be managed by the harness");
+    },
   };
   return new ChosenRuntimes(
     () => runtimeChoice(config, env),

@@ -63,14 +63,14 @@ describe("a forwarded inbox (.forward marker)", () => {
     expect(inboxList(d, "w1:p3").entries).toHaveLength(2);
   });
 
-  test("inbox ack and resend <old ref> <n> act on the moved held entries", () => {
+  test("inbox ack and resend <old ref> <n> act on the moved held entries", async () => {
     const { d, oldWriter } = setup("working");
     const held = { at: 3, state: "ambiguous" as const, detail: "timeout" };
     d.store.saveInbox(NEW, [{ ...m("held-a", 1), attempt: held }]);
     oldWriter({ ...m("held-b", 2), attempt: held } as ReturnType<typeof m>);
-    expect(releaseHeld(d, "w1:p3", 1, "ack")).toBe("hc:t7");
+    expect(await releaseHeld(d, "w1:p3", 1, "ack")).toBe("hc:t7");
     expect(d.store.queued(NEW).map((x) => x.text)).toEqual(["held-b"]);
-    expect(releaseHeld(d, "w1:p3", 1, "resend")).toBe("hc:t7");
+    expect(await releaseHeld(d, "w1:p3", 1, "resend")).toBe("hc:t7");
     expect(d.store.queued(NEW)).toEqual([m("held-b", 2)]);
     expect(d.store.queued(OLD)).toEqual([]);
   });

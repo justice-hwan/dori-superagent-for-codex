@@ -97,7 +97,7 @@ test("runtime is herdr, hc or absent; any other value stops the load with Config
   }
   await Bun.write(path, JSON.stringify({}));
   expect((await loadConfig(path, "/home/ana")).runtime).toBeUndefined();
-  for (const value of ["x", "HC", "", null, 1, ["hc"]]) {
+  for (const value of ["x", "codex", "HC", "", null, 1, ["hc"]]) {
     await Bun.write(path, JSON.stringify({ runtime: value }));
     await expect(loadConfig(path, "/home/ana")).rejects.toBeInstanceOf(ConfigError);
   }

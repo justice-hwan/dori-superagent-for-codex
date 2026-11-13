@@ -1,9 +1,9 @@
 import { Refusal } from "./refusal.ts";
 
-export const USAGE = `dori - a proactive multi-session harness on herdr or hc + omo
+export const USAGE = `dori - a proactive multi-session harness on herdr/hc + omo or Codex app-server
 
   dori up [--cwd DIR]                         open lead, duty, duty loop and hourly loop sessions
-  dori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7) as lead or duty (default: this one)
+  dori role <lead|duty> [REF]                 register a session (w1:p3, herdr:w1:p3, hc:t7, codex:UUID) as lead or duty
   dori start <key> --brief FILE [--cwd DIR]   open a lane: new tab, omo session, brief + lane rules
   dori report <key> --text T [--status working|waiting]
   dori ready <key> --text T --evidence LINK [--evidence LINK ...]
@@ -23,6 +23,8 @@ export const USAGE = `dori - a proactive multi-session harness on herdr or hc + 
   dori review <owner/repo#N> [--model M]      fresh omo reviewer at the exact head -> receipt
   dori merge <owner/repo#N> [--dry-run]       CLEAR receipt at head + green checks -> squash merge
   dori done <key>                             lead closes a READY lane
+  dori handoff <lead|duty|key|codex:UUID>      pause harness delivery for native Codex desktop control
+  dori takeback <lead|duty|key|codex:UUID>     reclaim an idle desktop thread; queued work can resume
   dori migrate [--to hc|herdr] (--lane K | --role lead|duty|duty-loop|hourly-loop | --all) [--dry-run]
                [--wait-minutes N] [--resume]  hand sessions over to another runtime; MIGRATED, SKIP, DEFERRED,
                                               or MIGRATE_ROLLBACK (exit 3) per session
