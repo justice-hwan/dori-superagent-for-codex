@@ -18,7 +18,7 @@ import type {
   SubmitResult,
 } from "../types.ts";
 import { NativeStartUncertain } from "../types.ts";
-import { pinHostRuntime, prepareBridge } from "./bridge-install.ts";
+import { pinHostRuntime, prepareBridge, trustedPath } from "./bridge-install.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
 import { runReview } from "./review.ts";
@@ -37,7 +37,10 @@ export class CodexRuntime implements SessionRuntime {
 
   constructor(root: string, env?: Environment) {
     const inherited = env ?? process.env;
-    this.env = { ...inherited, DORI_CMD: inherited["DORI_CMD"] || defaultCommand };
+    this.env = {
+      ...inherited,
+      DORI_CMD: inherited["DORI_CMD"] || defaultCommand,
+    };
     this.store = new CodexStore(root);
     const socket =
       inherited["DORI_CODEX_SOCKET"] ||
@@ -57,6 +60,7 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   prepareHost(cwd: string) {
+    trustedPath(this.store.root, cwd);
     const host = pinHostRuntime(cwd, this.env);
     this.env = { ...this.env, DORI_CMD: host.command };
     return host;
@@ -87,7 +91,10 @@ export class CodexRuntime implements SessionRuntime {
     await this.store.save(entry);
     bridge?.bind(id);
     if (!worker)
-      await this.connection.call("thread/name/set", { threadId: id, name: `Dori ${spec.role}: ${spec.name}` });
+      await this.connection.call("thread/name/set", {
+        threadId: id,
+        name: `Dori ${spec.role}: ${spec.name}`,
+      });
     return reference(entry);
   }
 
@@ -194,7 +201,11 @@ export class CodexRuntime implements SessionRuntime {
     prompt: string,
     model?: string,
     signal?: AbortSignal,
-  ): Promise<{ readonly stdout: string; readonly code: number; readonly stderr: string }> {
+  ): Promise<{
+    readonly stdout: string;
+    readonly code: number;
+    readonly stderr: string;
+  }> {
     this.prepareHost(this.env["DORI_CODEX_WORKSPACE"] || process.cwd());
     return runReview(this.store, this.connection, this.env, prompt, model, signal);
   }

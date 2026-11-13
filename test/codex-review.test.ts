@@ -7,12 +7,12 @@ import { CodexConnection } from "../src/runtime/codex/protocol.ts";
 
 test("a protected host reviews the bound task workspace rather than its executable cwd", async () => {
   const f = await fixture();
-  const rt = new CodexRuntime(f.root, { ...f.env, DORI_CODEX_WORKSPACE: f.root });
+  const rt = new CodexRuntime(f.root, { ...f.env, DORI_CODEX_WORKSPACE: f.spec.cwd });
   const pending = rt.runReview("Review only the task workspace");
   const id = await f.started;
   f.finish(id, "VERDICT: PASS");
   expect((await pending).code).toBe(0);
-  expect(f.params()).toMatchObject({ cwd: f.root, sandbox: "read-only" });
+  expect(f.params()).toMatchObject({ cwd: f.spec.cwd, sandbox: "read-only" });
 });
 
 test("native review waits for completion and returns only assistant verdict text", async () => {

@@ -41,7 +41,11 @@ const setup = async () => {
   writeFileSync(
     join(f.root, "config.json"),
     JSON.stringify({
-      codexBridgeAdapter: { module: "/not-loaded", configPath: "/not-read", instance: "personal" },
+      codexBridgeAdapter: {
+        module: "/not-loaded",
+        configPath: "/not-read",
+        instance: "personal",
+      },
     }),
   );
   return { f, d, lead };
@@ -75,7 +79,10 @@ test("existing request correlation cannot move to a replacement lead or differen
   const { f, d, lead } = await setup();
   await send(d, "lead", envelope, "dots");
   f.finish(lead.id, "done");
-  const changed = JSON.stringify({ ...object(JSON.parse(envelope)), prompt: "Different work" });
+  const changed = JSON.stringify({
+    ...object(JSON.parse(envelope)),
+    prompt: "Different work",
+  });
   await expect(send(d, "lead", changed, "dots")).rejects.toThrow("different work");
   const next = await f.rt.create({ ...f.spec, role: "lead", name: "next" });
   d.store.setRole("lead", next);
@@ -84,7 +91,7 @@ test("existing request correlation cannot move to a replacement lead or differen
 });
 
 test("typed outcome hook derives actual admitted identity and rejects unadmitted or caller-selected identity", async () => {
-  const { d, lead } = await setup();
+  const { f, d, lead } = await setup();
   const trusted = mkdtempSync(join(homedir(), ".dori-adapter-test-"));
   onTestFinished(() => rmSync(trusted, { recursive: true, force: true }));
   const module = join(trusted, "adapter.ts");
@@ -100,17 +107,25 @@ test("typed outcome hook derives actual admitted identity and rejects unadmitted
   );
   const scope: BridgeScope = {
     root: realpathSync(d.store.root),
-    cwd: realpathSync(d.store.root),
+    cwd: realpathSync(f.spec.cwd),
     role: "lead",
     key: "",
     id: lead.id,
   };
-  const outcome = { job_id: job, revision: 1, state: "completed", summary: "Fixture inspected." };
+  const outcome = {
+    job_id: job,
+    revision: 1,
+    state: "completed",
+    summary: "Fixture inspected.",
+  };
   await expect(callBridgeTool(d, scope, "dori_report_outcome", outcome)).rejects.toThrow("not delivered");
   await send(d, "lead", envelope, "dots");
-  await expect(callBridgeTool(d, scope, "dori_report_outcome", { ...outcome, thread_id: "spoof" })).rejects.toThrow(
-    "Unknown",
-  );
+  await expect(
+    callBridgeTool(d, scope, "dori_report_outcome", {
+      ...outcome,
+      thread_id: "spoof",
+    }),
+  ).rejects.toThrow("Unknown");
   await callBridgeTool(d, scope, "dori_report_outcome", outcome);
   const recorded = object(JSON.parse(readFileSync(receipt, "utf8")));
   expect(recorded["thread"]).toBe(lead.id);

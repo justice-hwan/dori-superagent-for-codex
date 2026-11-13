@@ -32,7 +32,10 @@ test("loop workers preserve scoped env and persisted output and close their own 
   await expect(f.rt.start(ref, `${command} loop`)).rejects.toMatchObject({ kind: "unsupported" });
   // Exercise process supervision with an explicit trusted test executable; native startup forbids arbitrary commands.
   const store = new CodexStore(f.root);
-  await startWorker(store, await store.owned(ref), `${command} loop`, f.env, { ...f.rt.prepareHost(f.root), command });
+  await startWorker(store, await store.owned(ref), `${command} loop`, f.env, {
+    ...f.rt.prepareHost(f.spec.cwd),
+    command,
+  });
   await ready.promise;
   const restored = new CodexRuntime(f.root, f.env);
 

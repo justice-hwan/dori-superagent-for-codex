@@ -137,6 +137,10 @@ they preserve its closed state and do not permit a new submission.
 
 `DORI_CODEX_SANDBOX` defaults to `workspace-write`; `read-only` is useful for
 bounded inspection. `DORI_CODEX_APPROVAL_POLICY` defaults to `on-request`.
+Every native launch validates that its authority home is outside writable
+workspace and temporary roots, including workers and launches with the stdio
+bridge unset. Configuration and ownership records must remain protected in
+both modes.
 Native reviews always use a fresh read-only thread; their default deadline is
 120 seconds, configurable with `DORI_CODEX_REVIEW_TIMEOUT_MS`. Cancellation
 interrupts only the review turn created by that invocation.
@@ -153,8 +157,12 @@ home, cwd, session selection or approval proxy is exposed.
 An installed integration can provide `leadTools` descriptors and
 `createPersonalTools` through an operator-selected trusted module. Configure
 `codexBridgeAdapter` in the private harness `config.json` with absolute `module`
-and `configPath` paths and its fixed `instance`. Both paths must be outside
-agent-writable roots. The lead can then use only `dori_job_status` and
+and `configPath` paths and its fixed `instance`. Both paths and every executable
+dependency must be outside agent-writable roots. Before discovery imports the
+adapter, core builds one protected bundle with macros disabled, rejects unresolved
+runtime imports, and validates every resolved input, including symlinked packages.
+Only builtin imports remain external. The immutable bundle is reused by that
+bridge process. The lead can then use only `dori_job_status` and
 `dori_report_outcome`; the host derives its native thread identity.
 
 Core reserves a recognized instance-scoped Dots job before inbox submission and

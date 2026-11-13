@@ -69,9 +69,9 @@ test("concurrent native up creates one complete role set without orphaned regist
   }
   const runtime = new PausedRuntime(f.root, f.env);
   const scoped = { ...d, runtimes: new Runtimes("codex", () => runtime) };
-  const first = up(scoped, f.root);
+  const first = up(scoped, f.spec.cwd);
   await entered.promise;
-  const result = await up(scoped, f.root).then(
+  const result = await up(scoped, f.spec.cwd).then(
     () => undefined,
     (error: unknown) => error,
   );

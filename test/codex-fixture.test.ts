@@ -1,6 +1,6 @@
 import { onTestFinished } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
@@ -20,7 +20,10 @@ type Thread = {
 
 /** Wire fixture models the daemon's independent history and per-client subscriptions. */
 export const fixture = async () => {
-  const root = await mkdtemp(join(tmpdir(), "dori-codex-test-"));
+  const directory = await mkdtemp(join(homedir(), ".dori-codex-test-"));
+  const root = join(directory, "authority");
+  const workspace = join(directory, "workspace");
+  await Promise.all([mkdir(root), mkdir(workspace)]);
   const threads = new Map<string, Thread>();
   const sockets = new Set<ServerWebSocket<{ initialized: boolean }>>();
   const calls: string[] = [];
@@ -69,7 +72,11 @@ export const fixture = async () => {
         if (method === "thread/start") {
           startParams = params;
           const id = crypto.randomUUID();
-          threads.set(id, { status: { type: "idle" }, items: [], subscribed: new Set([ws]) });
+          threads.set(id, {
+            status: { type: "idle" },
+            items: [],
+            subscribed: new Set([ws]),
+          });
           return reply({ thread: { id } });
         }
         const thread = threads.get(String(params["threadId"]));
@@ -80,7 +87,7 @@ export const fixture = async () => {
             thread.name = String(params["name"]);
             return reply({});
           case "thread/read":
-            return reply({ thread: { status: thread.status, cwd: root } });
+            return reply({ thread: { status: thread.status, cwd: workspace } });
           case "thread/resume":
             thread.subscribed.add(ws);
             if (thread.status.type === "notLoaded") thread.status = { type: "idle" };
@@ -92,7 +99,10 @@ export const fixture = async () => {
           case "thread/items/list": {
             const offset = Number(params["cursor"] || 0);
             const data = thread.items.slice(offset, offset + 2).map((item) => ({ item, turnId: "turn-1" }));
-            return reply({ data, nextCursor: offset + 2 < thread.items.length ? String(offset + 2) : null });
+            return reply({
+              data,
+              nextCursor: offset + 2 < thread.items.length ? String(offset + 2) : null,
+            });
           }
           case "thread/turns/list":
             return reply({
@@ -135,7 +145,10 @@ export const fixture = async () => {
               client.send(
                 JSON.stringify({
                   method: "turn/completed",
-                  params: { threadId: params["threadId"], turn: { id: "turn-1", status: "interrupted" } },
+                  params: {
+                    threadId: params["threadId"],
+                    turn: { id: "turn-1", status: "interrupted" },
+                  },
                 }),
               );
             return reply({});
@@ -145,12 +158,15 @@ export const fixture = async () => {
       },
     },
   });
-  const env = { ...process.env, DORI_CODEX_SOCKET: `ws://127.0.0.1:${server.port}` };
+  const env = {
+    ...process.env,
+    DORI_CODEX_SOCKET: `ws://127.0.0.1:${server.port}`,
+  };
   const spec: CreateSpec = {
     name: "lane",
     role: "lane",
     container: "tab",
-    cwd: root,
+    cwd: workspace,
     env: { DORI_LANE: "lane one", TEST_VALUE: "scoped" },
     group: "test",
   };
@@ -159,7 +175,7 @@ export const fixture = async () => {
     for (const dispose of cleanup.reverse()) await dispose();
     for (const ws of sockets) ws.close();
     await server.stop(true);
-    await rm(root, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
   });
   return {
     root,
@@ -194,7 +210,10 @@ export const fixture = async () => {
         ws.send(
           JSON.stringify({
             method: "turn/completed",
-            params: { threadId: id, turn: { id: "turn-1", status: "completed" } },
+            params: {
+              threadId: id,
+              turn: { id: "turn-1", status: "completed" },
+            },
           }),
         );
     },

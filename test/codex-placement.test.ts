@@ -1,8 +1,27 @@
 import { expect, onTestFinished, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CodexRuntime } from "../src/runtime/codex/index.ts";
+import { fixture } from "./codex-fixture.test.ts";
+
+test.each(["lead", "duty", "lane", "duty-loop", "hourly-loop"] as const)(
+  "native %s refuses authority inside the task workspace with the bridge unset",
+  async (role) => {
+    const f = await fixture();
+    const root = join(f.spec.cwd, ".dori");
+    mkdirSync(root);
+    const runtime = new CodexRuntime(root, {
+      ...f.env,
+      DORI_CODEX_BRIDGE: undefined,
+    });
+    await expect(runtime.create({ ...f.spec, role })).rejects.toMatchObject({
+      kind: "ownership",
+    });
+    expect(f.threads.size).toBe(0);
+  },
+);
 
 test.each(["capabilities", "nested-capabilities", "snapshot", "symlink-capabilities", "symlink-snapshot"])(
   "bridge refuses writable authority/code overlap: %s",

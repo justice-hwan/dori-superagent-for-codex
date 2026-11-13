@@ -5,6 +5,7 @@ import { adapterConfig, admittedThreadForJob } from "./bridge-jobs.ts";
 import type { BridgeScope } from "./bridge-tools.ts";
 import { array, object, text } from "./protocol.ts";
 import { argumentsOf } from "./bridge-schema.ts";
+import { installAdapter } from "./bridge-adapter-install.ts";
 
 const allowed = ["dori_job_status", "dori_report_outcome"];
 type Adapter = {
@@ -17,7 +18,7 @@ async function load(scope: BridgeScope): Promise<Adapter | undefined> {
   if (!config || scope.role !== "lead") return undefined;
   const module = trustedPath(config.module, scope.cwd);
   const configPath = trustedPath(config.configPath, scope.cwd);
-  const imported: unknown = await import(pathToFileURL(module).href);
+  const imported: unknown = await import(pathToFileURL(await installAdapter(module, scope.cwd)).href);
   const exports = object(imported);
   const factory = exports["createPersonalTools"];
   if (typeof factory !== "function") throw new Refusal("Adapter omitted createPersonalTools");

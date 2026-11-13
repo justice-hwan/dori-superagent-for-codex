@@ -146,18 +146,25 @@ not a benchmark or a speedup claim.
 
 ## Required checks
 
-`bun run ci` completed with exit 0 using genuine standalone **Bun 1.4.4**
-and a clean runtime environment:
+The latest corrective tree passed every required gate using genuine standalone
+**Bun 1.4.4**:
 
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 248 files passed.
-- Harness tests: **490 passed, 0 failed** across 61 files; 8 existing external
-  hc/herdr end-to-end cases were automatically skipped because those binaries
-  are absent from the isolated local test PATH. Their dedicated CI jobs remain
-  required.
+- Source-size gate: 250 files passed.
+- Harness tests: **508 passed, 0 failed** across 62 files.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
+
+The native and static gates are recorded in
+`/tmp/dori-trust-corrections-separated-ci.log`. Its messenger subprocess inherited
+the operator's `DORI_HOME` and `DORI_RUNTIME=hc`, causing three unchanged
+runtime-selection tests to fail. Only that stage was repeated with those
+variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
+392/0 result. No passed stage was repeated and no legacy test was changed.
+Earlier isolated runs skipped eight external hc/herdr cases because those
+binaries were absent from their test PATH; the latest run reports all 508
+harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
 `process.execPath` to the OmO executable. One existing messenger test launches
@@ -287,6 +294,24 @@ timeout also reproduced on untouched `724932c` (395 passes, five timeouts in
 That baseline evidence is retained in
 `/tmp/dori-idle-watch-baseline-724932c.log`, and the successful combined pipeline
 is `/tmp/dori-combined-final-ci-corrected-fixture.log`.
+
+The subsequent formal receipt at `6af8023` identified two additional trust
+boundaries. All native roles now validate authority-home placement even with
+the bridge unset. Five direct-role regressions failed by accepting a writable
+home before the guard and pass by refusing it before native admission.
+Wire fixtures now keep authority and task workspaces separate; all their
+ownership, recovery, hook, environment and process-group assertions remain.
+
+Adapter discovery now compiles a single protected dependency bundle with macros
+disabled, rejects opaque runtime imports, validates every canonical compiler
+input, and permits only builtin external imports. Four regressions reproduced
+acceptance of direct, symlinked-package and opaque import/require dependencies
+before this correction. All four now refuse them before execution; protected
+dependency discovery and admitted outcome delivery still pass.
+`/tmp/dori-direct-authority-red.log` and
+`/tmp/dori-adapter-closure-red.log` preserve the failures;
+`/tmp/dori-direct-authority-green.log` and
+`/tmp/dori-adapter-closure-green.log` preserve the focused passing coverage.
 
 ## Autonomous lead acceptance
 

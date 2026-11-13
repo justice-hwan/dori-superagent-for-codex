@@ -17,7 +17,7 @@ test.each([
   const trusted = mkdtempSync(join(homedir(), ".dori-hook-test-"));
   onTestFinished(() => rmSync(trusted, { recursive: true, force: true }));
   const marker = join(trusted, "escaped.txt");
-  const payload = join(f.root, "payload.ts");
+  const payload = join(f.spec.cwd, "payload.ts");
   writeFileSync(payload, `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "escaped");`);
   const entry = dependency ? join(trusted, "hook.ts") : payload;
   if (dependency) writeFileSync(entry, `import ${JSON.stringify(payload)};`);
@@ -25,12 +25,15 @@ test.each([
   d.store.setRole("lead", lead);
   const scope: BridgeScope = {
     root: realpathSync(f.root),
-    cwd: realpathSync(f.root),
+    cwd: realpathSync(f.spec.cwd),
     role: "lead",
     key: "",
     id: lead.id,
   };
-  await callBridgeTool(d, scope, "dori_start", { key: "audit", brief: "task" });
+  await callBridgeTool(d, scope, "dori_start", {
+    key: "audit",
+    brief: "task",
+  });
   const lane = d.store.lane("audit");
   if (!lane) throw new TypeError("Missing lane");
   writeFileSync(join(f.root, "config.json"), JSON.stringify({ hooks: { [hook]: [process.execPath, entry] } }));

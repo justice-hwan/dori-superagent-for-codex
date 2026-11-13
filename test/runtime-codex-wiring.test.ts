@@ -78,7 +78,7 @@ test("startLane creates a native Codex conversation and persists its routable la
   const brief = `${f.root}/input.md`;
   await Bun.write(brief, "Inspect the example and return evidence.");
 
-  const lane = await startLane(d, "native-lane", brief, { cwd: f.root });
+  const lane = await startLane(d, "native-lane", brief, { cwd: f.spec.cwd });
 
   expect(d.store.lane("native-lane")?.sessionRef).toEqual(lane.sessionRef);
   expect(lane.sessionRef.runtime).toBe("codex");
@@ -114,13 +114,13 @@ test("uncertain native lane startup retains a waiting lane for explicit recovery
   await Bun.write(brief, "Bounded startup recovery check.");
   f.admission("disconnect");
 
-  await expect(startLane(d, "uncertain-lane", brief, { cwd: f.root })).rejects.toMatchObject({ kind: "uncertain" });
+  await expect(startLane(d, "uncertain-lane", brief, { cwd: f.spec.cwd })).rejects.toMatchObject({ kind: "uncertain" });
 
   expect(d.store.lane("uncertain-lane")?.status).toBe("waiting");
   const ref = d.store.lane("uncertain-lane")?.sessionRef;
   if (!ref) throw new TypeError("Missing uncertain lane reference");
   expect(await f.rt.read(ref, 20)).toBe("");
-  await expect(startLane(d, "uncertain-lane", brief, { cwd: f.root })).rejects.toThrow("already open");
+  await expect(startLane(d, "uncertain-lane", brief, { cwd: f.spec.cwd })).rejects.toThrow("already open");
   expect(d.store.queued(ref).map((entry) => entry.attempt?.state)).toEqual(["ambiguous"]);
   f.admission("accept");
   await main(["inbox", "resend", "uncertain-lane", "1"], d);
@@ -134,12 +134,12 @@ test("uncertain native role startup retains its role and prevents a duplicate up
   const scoped = { ...d, store, runtimes: new Runtimes("codex", () => rt) };
   f.admission("disconnect");
 
-  await expect(up(scoped, f.root)).rejects.toMatchObject({ kind: "uncertain" });
+  await expect(up(scoped, f.spec.cwd)).rejects.toMatchObject({ kind: "uncertain" });
 
   expect(store.roles().lead?.runtime).toBe("codex");
   const ref = store.roles().lead;
   if (!ref) throw new TypeError("Missing uncertain lead reference");
   expect(store.queued(ref).map((entry) => entry.attempt?.state)).toEqual(["ambiguous"]);
-  await expect(up(scoped, f.root)).rejects.toThrow("already registered and live");
+  await expect(up(scoped, f.spec.cwd)).rejects.toThrow("already registered and live");
   expect(f.threads.size).toBe(2);
 });
