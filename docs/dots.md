@@ -69,6 +69,7 @@ The administrator approved this interface design through the integration lane on
 
 `integrations/dots/host-tools.ts` exports `createPersonalTools({configPath, binding})` for the trusted core host. It returns `tools`, `call(name, arguments)`, and `close()`. The factory is not a model tool. The operator fixes its configuration and role before exposing any descriptors:
 
+- `requestTools` and `leadTools` are static descriptor exports. Core can list the lead tools before its actual thread is bound without opening configuration or a database; it creates the factory lazily on the first call after binding.
 - A `dot` binding exposes the existing `dori_submit_request` and `dori_job_status` names.
 - A `lead` binding includes the trusted caller `thread_id` and an `admittedThreadForJob(job_id)` async callback. It exposes `dori_job_status` and `dori_report_outcome`.
 

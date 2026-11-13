@@ -38,6 +38,16 @@ export const requestTools = [
   }),
 ] as const;
 
+export const leadTools = [
+  requestTools[1],
+  ToolSchema.parse({
+    name: "dori_report_outcome",
+    description: "Persist an outcome for a job assigned to this lead thread by the trusted host.",
+    inputSchema: z.toJSONSchema(ReportOutcome),
+    annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  }),
+] as const;
+
 /** Only the trusted host supplies startup binding; model tool arguments never supply this object. */
 export async function createPersonalTools(options: z.infer<typeof Options>) {
   const { configPath, binding } = Options.parse(options);
@@ -55,15 +65,7 @@ export async function createPersonalTools(options: z.infer<typeof Options>) {
       tools.push(...requestTools);
       break;
     case "lead":
-      tools.push(
-        requestTools[1],
-        ToolSchema.parse({
-          name: "dori_report_outcome",
-          description: "Persist an outcome for a job assigned to this lead thread by the trusted host.",
-          inputSchema: z.toJSONSchema(ReportOutcome),
-          annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
-        }),
-      );
+      tools.push(...leadTools);
       break;
     default:
       throw new TypeError(`Unsupported binding: ${binding satisfies never}`);
