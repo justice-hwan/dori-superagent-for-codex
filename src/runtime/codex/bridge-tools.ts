@@ -1,5 +1,5 @@
 import { realpathSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Deps } from "../../harness.ts";
 import { send } from "../../inbox.ts";
 import { done, ready, report, startLane } from "../../lanes.ts";
@@ -55,7 +55,7 @@ export const callBridgeTool = async (d: Deps, scope: BridgeScope, name: string, 
       argumentsOf(input, []);
       return d.store
         .lanes()
-        .filter((lane) => realpathSync(lane.cwd) === scope.cwd)
+        .filter((lane) => resolve(lane.cwd) === scope.cwd || resolve(lane.cwd) === resolve(owned.spec.cwd))
         .slice(-100)
         .map((lane) => ({
           key: lane.key,

@@ -153,7 +153,7 @@ and a clean runtime environment:
 - Both TypeScript projects: passed.
 - Knip: passed.
 - Source-size gate: 236 files passed.
-- Harness tests: **459 passed, 0 failed** across 53 files; 8 existing external
+- Harness tests: **460 passed, 0 failed** across 53 files; 8 existing external
   hc/herdr end-to-end cases were automatically skipped because those binaries
   are absent from the isolated local test PATH. Their dedicated CI jobs remain
   required.
@@ -174,6 +174,13 @@ showed an uncertain native admission leaving no registered lane. Native startup
 uncertainty now preserves the thread, registers a waiting lane or the role,
 and holds its initial input for explicit acknowledgement or resend. The
 generic terminal-start cleanup still closes sessions after known failures.
+
+Independent review found that status attempted to resolve every archived lane's
+workspace on disk. A deleted unrelated workspace caused `ENOENT` and hid current
+lane status. The new regression reproduced that failure before the fix. Status
+now compares persisted absolute workspace identities, including the current
+lead's original cwd alias, without reading archived directories. Full CI passed
+again after this correction; the real delegation check did not need repeating.
 
 ## Autonomous lead acceptance
 

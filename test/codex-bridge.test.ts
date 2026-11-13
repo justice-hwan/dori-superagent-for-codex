@@ -1,5 +1,5 @@
 import { expect, onTestFinished, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
@@ -122,6 +122,21 @@ test("desktop-owned lead admission remains queued when a lane reports through ma
   });
   expect(d.store.queued(lead).map((entry) => entry.text)).toEqual(["[REPORT audit] held for desktop"]);
   expect(f.threads.get(lead.id)?.items.at(-1)).toEqual({ type: "agentMessage", text: "ack" });
+});
+
+test("status ignores unrelated archived workspaces after their directories are removed", async () => {
+  const { f, d, scope } = await setup();
+  await callBridgeTool(d, scope, "dori_start", { key: "audit", brief: "task" });
+  const lane = d.store.lane("audit");
+  if (!lane) throw new TypeError("Missing lane");
+  const archived = join(f.root, "archived-workspace");
+  mkdirSync(archived);
+  d.store.saveLane({ ...lane, key: "archived", cwd: archived, status: "done" });
+  rmSync(archived, { recursive: true });
+
+  expect(await callBridgeTool(d, scope, "dori_status", {})).toEqual([
+    { key: "audit", status: "working", final: undefined },
+  ]);
 });
 
 test("bridge installation rejects an agent-writable authority home", async () => {
