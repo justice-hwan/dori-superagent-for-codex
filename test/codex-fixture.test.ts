@@ -26,6 +26,7 @@ export const fixture = async () => {
   const calls: string[] = [];
   const started = Promise.withResolvers<string>();
   const resumes: ((id: string) => void)[] = [];
+  const admissions: ((id: string) => void)[] = [];
   const cleanup: (() => void | Promise<void>)[] = [];
   let startParams: Record<string, unknown> = {};
   let admission: "accept" | "reject" | "disconnect" | "accept-disconnect" | "malformed" = "accept";
@@ -111,6 +112,7 @@ export const fixture = async () => {
               return;
             }
             if (thread.status.type !== "idle") return reject(-32000, "Would steer desktop turn");
+            for (const observe of admissions) observe(String(params["threadId"]));
             thread.status = { type: "active", activeFlags: [] };
             thread.items.push({
               type: "userMessage",
@@ -168,6 +170,7 @@ export const fixture = async () => {
     calls,
     cleanup,
     started: started.promise,
+    onAdmission: (observe: (id: string) => void) => admissions.push(observe),
     nextResume: () =>
       new Promise<string>((resolve) => {
         resumes.push(resolve);

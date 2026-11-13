@@ -103,7 +103,11 @@ export class Store {
 
   /** Appends to the inbox of the session `ref` was forwarded to, if it was. */
   enqueue(ref: SessionRef, msg: QueuedMessage): void {
-    appendQueue(this.inboxPath(this.forwardOf(ref) ?? ref), msg);
+    const target = this.forwardOf(ref) ?? ref;
+    appendQueue(
+      this.inboxPath(target),
+      target.runtime === "codex" ? { ...msg, deliveryId: msg.deliveryId ?? crypto.randomUUID() } : msg,
+    );
   }
 
   queued(ref: SessionRef): QueuedMessage[] {

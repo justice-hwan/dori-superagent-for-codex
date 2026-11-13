@@ -30,7 +30,8 @@ test.each([
     attempt: { at: d.now(), state: "ambiguous" as const },
     ...(legacy ? {} : { deliveryId: crypto.randomUUID() }),
   };
-  d.store.enqueue(ref, selected);
+  if (legacy) d.store.saveInbox(ref, [selected]);
+  else d.store.enqueue(ref, selected);
   const pending = releaseHeld(
     { ...d, runtimes: new Runtimes("codex", () => new DelayedRecovery(f.root, f.env)) },
     "lead",

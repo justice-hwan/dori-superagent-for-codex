@@ -5,6 +5,7 @@ import type { Probe } from "../types.ts";
 import { CodexError } from "./protocol.ts";
 import type { Environment } from "./threads.ts";
 import type { CodexStore, RecordEntry } from "./store.ts";
+import type { pinHostRuntime } from "./bridge-install.ts";
 
 /** Birth time plus an argv marker proves the wrapper even where macOS hides shell environments. */
 const identity = async (pid: number): Promise<string | undefined> => {
@@ -33,15 +34,27 @@ export const startWorker = async (
   entry: RecordEntry,
   command: string,
   env: Environment,
+  host: ReturnType<typeof pinHostRuntime>,
 ): Promise<void> => {
   if (entry.pid) throw new CodexError("unsupported", "Worker was already started");
   const suffix = entry.spec.role === "duty-loop" ? / duty --interval [1-9][0-9]*$/ : / loop$/;
-  if (!suffix.test(command)) throw new CodexError("unsupported", "Worker command does not match its loop role");
+  const operation = command.match(suffix)?.[0];
+  if (!operation || command.slice(0, -operation.length) !== host.command)
+    throw new CodexError("unsupported", "Worker command must use the pinned runtime and match its loop role");
   const output = openSync(join(store.directory, `${entry.id}.log`), "a", 0o600);
   // The trailing exit keeps a stable wrapper PID instead of a shell exec optimization.
   const child = spawn("/bin/sh", ["-c", `${command}\nstatus=$?\nexit "$status"`, `dori-codex-worker=${entry.id}`], {
-    env: { ...env, ...entry.spec.env, DORI_HOME: store.root, DORI_RUNTIME: "codex", DORI_CODEX_WORKER: entry.id },
-    cwd: entry.spec.cwd,
+    env: {
+      ...env,
+      ...entry.spec.env,
+      DORI_HOME: store.root,
+      DORI_RUNTIME: "codex",
+      DORI_CODEX_WORKER: entry.id,
+      DORI_CMD: host.command,
+      BUN_BIN: host.executable,
+      DORI_CODEX_WORKSPACE: entry.spec.cwd,
+    },
+    cwd: host.directory,
     detached: true,
     stdio: ["ignore", output, output],
   });

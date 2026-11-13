@@ -74,6 +74,8 @@ export class NativeStartUncertain extends Error {
 }
 export interface SessionRuntime {
   readonly kind: RuntimeKind;
+  /** Freeze the native host graph before any admission; workers and role prompts use this copy. */
+  prepareHost?(cwd: string): { readonly command: string; readonly prompts: string };
   /** The caller's own session from the runtime's env (HERDR_PANE_ID + HERDR_WORKSPACE_ID / HC_TERMINAL_ID), or undefined. */
   self(): SessionRef | undefined;
   /** herdr: `workspace create --label <label> --cwd <cwd> --no-focus` -> the workspace id (its root pane is left as is, as today). hc: returns `label` unchanged, no call. */

@@ -76,6 +76,21 @@ function snapshot(base: string): string {
   return directory;
 }
 
+export const pinHostRuntime = (cwd: string, env: Environment) => {
+  const executable = trustedPath(env["BUN_BIN"] || process.execPath, cwd);
+  const base = join(homedir(), ".local/share/dori/codex-bridge");
+  mkdirSync(base, { recursive: true, mode: 0o700 });
+  trustedPath(base, cwd);
+  const directory = trustedPath(snapshot(base), cwd);
+  const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
+  return {
+    directory,
+    executable,
+    command: `${quote(executable)} ${quote(join(directory, "src/cli.ts"))}`,
+    prompts: join(directory, "prompts"),
+  };
+};
+
 export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) => {
   if (spec.role !== "lead" && spec.role !== "lane" && spec.role !== "duty")
     throw new CodexError("unsupported", "No bridge for workers");
@@ -84,11 +99,8 @@ export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) 
   const role: BridgeRole = spec.role;
   const cwd = realpathSync(spec.cwd);
   const home = trustedPath(root, cwd);
-  const executable = trustedPath(env["BUN_BIN"] || process.execPath, cwd);
+  const { directory: installed, executable } = pinHostRuntime(cwd, env);
   const base = join(homedir(), ".local/share/dori/codex-bridge");
-  mkdirSync(base, { recursive: true, mode: 0o700 });
-  trustedPath(base, cwd);
-  const installed = trustedPath(snapshot(base), cwd);
   const capabilitiesPath = join(base, "capabilities");
   mkdirSync(capabilitiesPath, { recursive: true, mode: 0o700 });
   const capabilities = trustedPath(capabilitiesPath, cwd);

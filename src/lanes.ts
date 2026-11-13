@@ -22,14 +22,16 @@ export async function startLane(
   const existing = d.store.lane(key);
   if (existing && existing.status !== "done" && existing.status !== "lost")
     throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
-  const cwd = resolve(opts.cwd ?? process.cwd());
+  const rt = d.runtimes.default;
+  const cwd = resolve(
+    opts.cwd ?? (rt.kind === "codex" ? process.env["DORI_CODEX_WORKSPACE"] : undefined) ?? process.cwd(),
+  );
   const briefPath = d.store.briefPath(key);
   const footer = prompt("lane-footer.md", { key, dori: d.doriCmd });
   await Bun.write(briefPath, `${readFileSync(briefFile, "utf8").trimEnd()}\n\n${footer}`);
 
   // The group is the caller's own when it runs in a session of the selected runtime (a lane opened from the lead's
   // workspace stays there); otherwise herdr gets a new "dori" workspace and hc this home's group label.
-  const rt = d.runtimes.default;
   const self = d.runtimes.selfAny(process.env);
   const group =
     opts.group ??

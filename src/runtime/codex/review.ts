@@ -18,7 +18,13 @@ export const runReview = async (
   const milliseconds = Number(env["DORI_CODEX_REVIEW_TIMEOUT_MS"] || 120_000);
   if (!Number.isFinite(milliseconds) || milliseconds < 1)
     throw new CodexError("unsupported", "DORI_CODEX_REVIEW_TIMEOUT_MS must be positive");
-  const spec: CreateSpec = { name: "review", role: "lane", cwd: process.cwd(), env: {}, container: "tab" };
+  const spec: CreateSpec = {
+    name: "review",
+    role: "lane",
+    cwd: env["DORI_CODEX_WORKSPACE"] || process.cwd(),
+    env: {},
+    container: "tab",
+  };
   const response = object(
     await connection.call("thread/start", {
       ...startParams(store.root, spec, env),

@@ -125,6 +125,16 @@ Selected updates read and commit under that same transaction and replace JSONL
 atomically. Whole-queue replacement is reserved for explicit replacement; live
 recovery, settlement and identity assignment use transforms.
 
+Native startup freezes the complete host source before admitting a turn.
+Lead/duty prompts and both loop workers use that protected copy. Worker command
+prefixes are fixed to its CLI and their executable cwd is protected; their task
+workspace remains operator-bound for lane creation and review. Arbitrary shell
+worker commands are refused by the native runtime.
+Native inbox entries receive stable delivery identities at enqueue. Legacy
+entries without identities are backfilled under the queue transaction.
+Receipt inspection and acknowledgement may reconcile a locally closed session;
+they preserve its closed state and do not permit a new submission.
+
 `DORI_CODEX_SANDBOX` defaults to `workspace-write`; `read-only` is useful for
 bounded inspection. `DORI_CODEX_APPROVAL_POLICY` defaults to `on-request`.
 Native reviews always use a fresh read-only thread; their default deadline is

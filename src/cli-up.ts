@@ -15,10 +15,10 @@ import { RuntimeChoiceError } from "./runtime/select.ts";
 import type { Role } from "./store-types.ts";
 import { takeInboxLock } from "./inbox-lock.ts";
 
-function renderPrompt(d: Deps, name: string): string {
+function renderPrompt(d: Deps, name: string, source = promptsDir()): string {
   const dir = join(d.store.root, "prompts");
   mkdirSync(dir, { recursive: true });
-  const src = readFileSync(join(promptsDir(), name), "utf8").replaceAll("{{dori}}", d.doriCmd);
+  const src = readFileSync(join(source, name), "utf8").replaceAll("{{dori}}", d.doriCmd);
   const out = join(dir, name);
   writeFileSync(out, src);
   return out;
@@ -40,6 +40,8 @@ export async function up(d: Deps, cwd: string): Promise<void> {
           throw new RuntimeChoiceError(`${role} is already registered and live; use this home's existing roles`);
       }
     }
+    const host = rt.prepareHost?.(cwd);
+    if (host) d = { ...d, doriCmd: host.command };
     const env = { DORI_HOME: d.store.root };
     const openRole = (spec: CreateSpec & { readonly role: Role }, command: string | AgentLaunch) =>
       openSession(rt, spec, command).catch((error: unknown) => {
@@ -56,7 +58,7 @@ export async function up(d: Deps, cwd: string): Promise<void> {
         throw error;
       });
     const agent = (name: string) => {
-      const path = renderPrompt(d, name);
+      const path = renderPrompt(d, name, host?.prompts);
       return rt.kind === "codex"
         ? {
             prompt: "Read your role instructions and acknowledge readiness. Wait for the next task.",

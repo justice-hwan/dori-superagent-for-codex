@@ -152,8 +152,8 @@ and a clean runtime environment:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 246 files passed.
-- Harness tests: **485 passed, 0 failed** across 59 files; 8 existing external
+- Source-size gate: 248 files passed.
+- Harness tests: **490 passed, 0 failed** across 61 files; 8 existing external
   hc/herdr end-to-end cases were automatically skipped because those binaries
   are absent from the isolated local test PATH. Their dedicated CI jobs remain
   required.
@@ -252,6 +252,41 @@ including both real two-process cases, native sender crashes and legacy
 forwarding/migration. This changes the exercised storage path, so readiness
 also requires a fresh bounded flow from the corrected immutable source.
 Earlier raw evidence remains preserved at its original scope.
+
+## Combined host runtime and receipt correction
+
+The formal `7f132b9` receipt additionally identified late worker promotion of
+task-writable source and confirmed receipts stranded after local closure.
+`/tmp/dori-combined-formal-red.log` records the original four new failures.
+`/tmp/dori-worker-promotion-red.log` independently shows task-poisoned bridge
+code in the late protected snapshot and both workers executing from the task
+checkout. These fixtures mutate only disposable cloned source under an isolated
+HOME, never a real frozen install.
+
+The host graph is now pinned before native admission, including direct session
+creation and review. Startup renders native role prompts from that copy; both
+workers require its command prefix and run with a protected cwd. Their logical
+task workspace is carried separately. A derived review-cwd regression failed
+before preserving that workspace, then passed with the combined owner suite.
+Native identities are assigned at enqueue, while old identity-less records
+retain atomic backfill. Receipt-only reconciliation allows closed records,
+without changing new-delivery ownership guards.
+
+`/tmp/dori-combined-boundaries-green.log` records 33 passes across seven owner
+suites. The sender-exit -> lane-close -> reconciliation case clears its receipt
+and queue without another turn, and direct delivery to that closed ref is
+refused. The generic process-supervision test retains its environment, output,
+birth identity and process-group assertions at the trusted process helper;
+the public native entry separately refuses its arbitrary shell command.
+
+The complete combined tree passed CI after repairing the legacy fixture to
+seed an actual old-format record instead of the new identity-assigning enqueue.
+No assertions or timeouts were weakened. An intermittent idle-watch integration
+timeout also reproduced on untouched `724932c` (395 passes, five timeouts in
+400 runs). Its cause remains unproven; the watcher and its test are unchanged.
+That baseline evidence is retained in
+`/tmp/dori-idle-watch-baseline-724932c.log`, and the successful combined pipeline
+is `/tmp/dori-combined-final-ci-corrected-fixture.log`.
 
 ## Autonomous lead acceptance
 

@@ -3,6 +3,8 @@ import { watch } from "node:fs";
 import { join } from "node:path";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
 import { object } from "../src/runtime/codex/protocol.ts";
+import { CodexStore } from "../src/runtime/codex/store.ts";
+import { startWorker } from "../src/runtime/codex/workers.ts";
 import { fixture } from "./codex-fixture.test.ts";
 
 const quote = (value: string) => `'${value.replaceAll("'", "'\\''")}'`;
@@ -26,7 +28,11 @@ test("loop workers preserve scoped env and persisted output and close their own 
   });
   const script = `trap 'printf done > ${quote(join(f.root, "codex", "sessions", "terminated"))}; exit 0' TERM; printf '%s %s %s\\n' "$WORKER_VALUE" "$DORI_HOME" "$DORI_CODEX_WORKER"; printf ready > ${quote(join(f.root, "codex", "sessions", "ready"))}; while :; do /bin/sleep 10; done`;
 
-  await f.rt.start(ref, `/bin/sh -c ${quote(script)} loop`);
+  const command = `/bin/sh -c ${quote(script)}`;
+  await expect(f.rt.start(ref, `${command} loop`)).rejects.toMatchObject({ kind: "unsupported" });
+  // Exercise process supervision with an explicit trusted test executable; native startup forbids arbitrary commands.
+  const store = new CodexStore(f.root);
+  await startWorker(store, await store.owned(ref), `${command} loop`, f.env, { ...f.rt.prepareHost(f.root), command });
   await ready.promise;
   const restored = new CodexRuntime(f.root, f.env);
 

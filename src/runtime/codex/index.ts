@@ -18,7 +18,7 @@ import type {
   SubmitResult,
 } from "../types.ts";
 import { NativeStartUncertain } from "../types.ts";
-import { prepareBridge } from "./bridge-install.ts";
+import { pinHostRuntime, prepareBridge } from "./bridge-install.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
 import { runReview } from "./review.ts";
@@ -33,7 +33,7 @@ export class CodexRuntime implements SessionRuntime {
   readonly kind = "codex";
   private readonly store: CodexStore;
   private readonly connection: CodexConnection;
-  private readonly env: Environment;
+  private env: Environment;
 
   constructor(root: string, env?: Environment) {
     const inherited = env ?? process.env;
@@ -56,7 +56,14 @@ export class CodexRuntime implements SessionRuntime {
     return label;
   }
 
+  prepareHost(cwd: string) {
+    const host = pinHostRuntime(cwd, this.env);
+    this.env = { ...this.env, DORI_CMD: host.command };
+    return host;
+  }
+
   async create(spec: CreateSpec): Promise<SessionRef> {
+    this.prepareHost(spec.cwd);
     const worker = spec.role === "duty-loop" || spec.role === "hourly-loop";
     const bridge =
       !worker && this.env["DORI_CODEX_BRIDGE"] === "stdio" ? prepareBridge(this.store.root, spec, this.env) : undefined;
@@ -91,7 +98,8 @@ export class CodexRuntime implements SessionRuntime {
     const release = takeInboxLock(`${this.store.path(ref.id)}.submit-lock`, Date.now());
     if (!release) throw new CodexError("unsupported", "A submission is still in progress");
     try {
-      await startWorker(this.store, await this.store.owned(ref), command, this.env);
+      const entry = await this.store.owned(ref);
+      await startWorker(this.store, entry, command, this.env, this.prepareHost(entry.spec.cwd));
     } finally {
       release();
     }
@@ -187,6 +195,7 @@ export class CodexRuntime implements SessionRuntime {
     model?: string,
     signal?: AbortSignal,
   ): Promise<{ readonly stdout: string; readonly code: number; readonly stderr: string }> {
+    this.prepareHost(this.env["DORI_CODEX_WORKSPACE"] || process.cwd());
     return runReview(this.store, this.connection, this.env, prompt, model, signal);
   }
 
