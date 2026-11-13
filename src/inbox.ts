@@ -68,7 +68,7 @@ export async function tellLead(d: Deps, text: string, from: string): Promise<"DE
 export async function flushInbox(d: Deps, from: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
   const ref = d.store.forwardOf(from) ?? from;
   if (migrating(d.store.root, from) || migrating(d.store.root, ref)) return "queued";
-  if (d.store.queued(ref).length === 0 && !d.store.forwardPending(ref)) return "delivered";
+  if (ref.runtime !== "codex" && d.store.queued(ref).length === 0 && !d.store.forwardPending(ref)) return "delivered";
   const release = d.store.lockInbox(ref, d.now());
   if (!release) return "queued";
   try {
@@ -81,10 +81,23 @@ export async function flushInbox(d: Deps, from: SessionRef): Promise<"delivered"
 
 async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "queued" | "no-agent" | "held"> {
   // Re-read under the lock: the flush that held it may have delivered these meanwhile.
-  const all = d.store.queued(ref);
-  if (all.length === 0) return "delivered";
-  const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
   const rt = d.runtimes.for(ref);
+  const confirmed = await rt.confirmedDelivery?.(ref);
+  if (confirmed) {
+    settleInbox(
+      d,
+      ref,
+      d.store.queued(ref).filter((message) => message.deliveryId && confirmed.messageIds.includes(message.deliveryId)),
+    );
+    await rt.acknowledgeDelivery?.(ref, confirmed.id);
+  }
+  let all = d.store.queued(ref);
+  if (all.length === 0) return "delivered";
+  if (rt.kind === "codex" && all.some((message) => !message.deliveryId)) {
+    all = all.map((message) => ({ ...message, deliveryId: message.deliveryId ?? crypto.randomUUID() }));
+    d.store.saveInbox(ref, all);
+  }
+  const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
   // The probe carries the #62 screen check on herdr: an omo with live monitors between turns reads idle.
   const { status } = await rt.probe(ref);
   // Before the held check, so a gone session with only held messages says so instead of delivery-ambiguous forever (#108).
@@ -125,10 +138,25 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
       ? (queued[0]?.text ?? "")
       : `${queued.length} messages arrived while you were busy:\n\n` +
         queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
-  const out = await rt.deliver(ref, body);
+  const messageIds =
+    rt.kind === "codex"
+      ? queued.map((message) => {
+          if (!message.deliveryId) throw new TypeError("Native inbox message is missing its stable identity");
+          return message.deliveryId;
+        })
+      : [];
+  const batch =
+    rt.kind === "codex"
+      ? {
+          id: new Bun.CryptoHasher("sha256").update(JSON.stringify(messageIds)).digest("hex"),
+          messageIds,
+        }
+      : undefined;
+  const out = await rt.deliver(ref, body, batch ? { batch } : undefined);
   switch (out.kind) {
     case "delivered":
       settleInbox(d, ref, queued);
+      if (batch) await rt.acknowledgeDelivery?.(ref, batch.id);
       return "delivered";
     case "no-agent":
       return "no-agent";
@@ -151,7 +179,11 @@ function settleInbox(d: Deps, ref: SessionRef, batch: readonly QueuedMessage[], 
   if (!attempt) for (const message of batch) confirmJob(d.store, ref, message.text);
   const left = [...batch];
   const rest = d.store.queued(ref).flatMap((m) => {
-    const i = left.findIndex((b) => b.at === m.at && b.from === m.from && b.text === m.text);
+    const i = left.findIndex((b) =>
+      b.deliveryId && m.deliveryId
+        ? b.deliveryId === m.deliveryId
+        : b.at === m.at && b.from === m.from && b.text === m.text,
+    );
     if (i < 0) return [m];
     left.splice(i, 1);
     return attempt ? [{ ...m, attempt }] : [];

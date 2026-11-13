@@ -152,8 +152,8 @@ and a clean runtime environment:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 236 files passed.
-- Harness tests: **460 passed, 0 failed** across 53 files; 8 existing external
+- Source-size gate: 241 files passed.
+- Harness tests: **470 passed, 0 failed** across 56 files; 8 existing external
   hc/herdr end-to-end cases were automatically skipped because those binaries
   are absent from the isolated local test PATH. Their dedicated CI jobs remain
   required.
@@ -182,7 +182,38 @@ now compares persisted absolute workspace identities, including the current
 lead's original cwd alias, without reading archived directories. Full CI passed
 again after this correction; the real delegation check did not need repeating.
 
+## Formal review corrections
+
+The formal review at `b8f9e13` blocked on four findings. Each was reproduced
+before its production owner changed; `/tmp/dori-formal-findings-red.log`
+records eight failures across the four mechanisms.
+
+- Preauthorized report/READY executed workspace-controlled host hook code.
+  Reproductions cover both a writable entry script and a protected entry that
+  imports a writable dependency. Management calls now disable unrestricted
+  lifecycle hooks; ordinary operator hook tests remain unchanged and pass.
+- A sender exit after native acknowledgement but before inbox settlement
+  replayed the admitted batch. Stable message identities and a durable confirmed
+  batch now reconcile the already-delivered members before another native send.
+  Real subprocess exits exercise both settlement boundaries and a newer message
+  with identical text. An empty queue also clears its pending confirmation.
+- Close raced admission and could be overwritten by stale open ownership.
+  Close now shares the submission lock and rereads ownership under it. Worker
+  startup uses the same mutex so its later persistence cannot reopen a close.
+- Two concurrent `up` calls created duplicate, unregistered roles. A per-home
+  startup transaction now encloses the live check, creation and registration.
+
+Targeted green evidence is retained in
+`/tmp/dori-formal-hooks-concurrency-green.log`,
+`/tmp/dori-formal-crash-green.log` and
+`/tmp/dori-formal-targeted-green.log`. The adjacent worker-lock and
+post-settlement confirmation failures were also captured separately before
+their corrections. No native approval was answered, sandbox policy widened,
+shared daemon restarted or production instance launched during these fixes.
+
 ## Autonomous lead acceptance
+
+The earlier bounded acceptance below is retained as historical evidence.
 
 The external API workflow above verifies transport and lifecycle behavior, not
 autonomous delegation. A separate bounded run used the unchanged `prompts/lead.md`

@@ -55,6 +55,11 @@ host lifecycle code with a fixed instance/workspace and role capability.
 Management tool calls receive scoped preauthorization; ordinary tools remain
 `workspace-write` and native approval requests remain with the desktop.
 Unrelated inherited MCP servers are disabled only on these managed threads.
+Management reports and READY calls do not run configured lifecycle hooks.
+Those hooks execute unrestricted host commands, whose scripts or dependencies
+could be writable by a sandboxed lane. Operator CLI lifecycle hooks retain their
+existing behavior; the typed outcome adapter is the supported host notification
+boundary for a managed lead.
 
 ## Desktop behavior
 
@@ -95,6 +100,14 @@ thread and role or waiting lane. Its initial prompt is held in that session's
 inbox. Inspect desktop history first, then use `inbox ack TARGET INDEX` if it
 arrived, or `inbox resend TARGET INDEX` if it did not. Never restart the same
 lane to retry an unknown submission.
+
+Before native inbox admission, message identities are saved durably. A confirmed
+batch stays recorded until its messages are removed from the inbox. Recovery
+settles those exact identities before another submission, preserving newer
+messages even when their text is identical. Uncertain admission still requires
+explicit inspection; it is never automatically replayed. Close, worker startup
+and handoff share the submission lock. `up` holds a per-home startup transaction
+lock across role checks, creation and registration.
 
 `DORI_CODEX_SANDBOX` defaults to `workspace-write`; `read-only` is useful for
 bounded inspection. `DORI_CODEX_APPROVAL_POLICY` defaults to `on-request`.

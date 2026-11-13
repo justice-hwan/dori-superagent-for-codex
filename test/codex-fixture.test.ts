@@ -6,6 +6,10 @@ import type { ServerWebSocket } from "bun";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
 import { object } from "../src/runtime/codex/protocol.ts";
 import type { CreateSpec } from "../src/runtime/types.ts";
+import type { Deps } from "../src/harness.ts";
+import { Runtimes } from "../src/runtime/registry.ts";
+import { Store } from "../src/store.ts";
+import { World } from "./fake.ts";
 
 type Thread = {
   name?: string;
@@ -192,4 +196,21 @@ export const fixture = async () => {
         );
     },
   };
+};
+
+export const harnessFixture = async () => {
+  const f = await fixture();
+  const world = new World();
+  const d: Deps = {
+    store: new Store(f.root),
+    runtimes: new Runtimes("codex", () => f.rt),
+    choice: () => ({ kind: "codex", source: "env" }),
+    exec: world.exec,
+    now: () => world.clock,
+    agentCmd: "unused",
+    doriCmd: "unused",
+    host: () => world.host,
+    usage: world.recorder,
+  };
+  return { f, d };
 };

@@ -98,6 +98,7 @@ const firstLine = (s: string): string => s.trim().split("\n")[0] ?? "";
  * error or a non-zero exit writes one stderr line. The returned promise is only for callers that want to await it.
  */
 export function runHook(d: Deps, name: Exclude<HookName, "reviewCommand">, vars: HookVars): Promise<void> {
+  if (d.lifecycleHooks === "disabled") return Promise.resolve();
   const hook: Running = { name };
   const fail = (why: string) => {
     if (hook.killed) return;

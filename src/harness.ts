@@ -19,6 +19,8 @@ const PROMPTS = join(import.meta.dir, "..", "prompts");
 const CLI = resolve(import.meta.dir, "cli.ts");
 
 export type Deps = {
+  /** Preauthorized management tools may not launch unrestricted host lifecycle hooks. */
+  readonly lifecycleHooks?: "disabled";
   readonly store: Store;
   /** The session runtimes: `default` opens new sessions, `for(ref)` reaches a stored one on its own runtime. */
   readonly runtimes: Runtimes;

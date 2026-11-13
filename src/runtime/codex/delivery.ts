@@ -19,6 +19,11 @@ export const deliver = async (
   if (!release) return { kind: "not-ready", status: "working" };
   try {
     const entry = await store.owned(ref);
+    if (entry.confirmed) {
+      return entry.confirmed.id === opts?.batch?.id
+        ? { kind: "delivered", started: true }
+        : { kind: "not-ready", status: "blocked" };
+    }
     if (entry.desktopOwned) return { kind: "not-ready", status: "blocked" };
     if (entry.uncertain)
       return { kind: "ambiguous", detail: entry.uncertain, failure: new CodexError("uncertain", entry.uncertain) };
@@ -37,7 +42,7 @@ export const deliver = async (
         threadId: ref.id,
         input: [{ type: "text", text: prompt, text_elements: [] }],
       });
-      await store.save(entry);
+      await store.save({ ...entry, ...(opts?.batch ? { confirmed: opts.batch } : {}) });
       return { kind: "delivered", started: true };
     } catch (error) {
       if (error instanceof CodexError && error.kind === "remote") {

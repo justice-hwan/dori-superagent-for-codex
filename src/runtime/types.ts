@@ -45,8 +45,9 @@ export type CreateSpec = {
   readonly near?: SessionRef;
 };
 export type DeliverWhen = "idle" | "working" | "any";
+export type DeliveryBatch = { readonly id: string; readonly messageIds: readonly string[] };
 /** `when`: the status the text may be typed under (hc: --if idle / --if working / none for "any"; "any" still never types into an `unknown` or `shell` session). `force`: type into a blocked agent (hc --force; herdr: no-op). */
-export type DeliverOptions = { readonly when?: DeliverWhen; readonly force?: boolean };
+export type DeliverOptions = { readonly when?: DeliverWhen; readonly force?: boolean; readonly batch?: DeliveryBatch };
 export type DeliverOutcome =
   | { readonly kind: "delivered"; readonly turn?: number; readonly started?: boolean }
   | { readonly kind: "no-agent" }
@@ -92,6 +93,9 @@ export interface SessionRuntime {
   read(ref: SessionRef, lines: number, opts?: ReadOptions): Promise<string>;
   /** Never types into a session whose probe says shellInFront, whatever `status` says. Default `when` = "idle". */
   deliver(ref: SessionRef, text: string, opts?: DeliverOptions): Promise<DeliverOutcome>;
+  /** Durable native admission awaiting inbox settlement, including recovery after sender exit. */
+  confirmedDelivery?(ref: SessionRef): Promise<DeliveryBatch | undefined>;
+  acknowledgeDelivery?(ref: SessionRef, batchId: string): Promise<void>;
   submitTyped(ref: SessionRef, into: AgentIdentity): Promise<SubmitResult>;
   typeIntoShell(ref: SessionRef, text: string): Promise<boolean>;
   keys(ref: SessionRef, keys: readonly Key[]): Promise<void>;

@@ -1,13 +1,14 @@
 import { mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import type { CreateSpec, SessionRef } from "../types.ts";
-import { CodexError, object, text } from "./protocol.ts";
+import type { CreateSpec, DeliveryBatch, SessionRef } from "../types.ts";
+import { array, CodexError, object, text } from "./protocol.ts";
 
 export type RecordEntry = {
   readonly id: string;
   readonly spec: CreateSpec;
   readonly closed: boolean;
   readonly uncertain?: string;
+  readonly confirmed?: DeliveryBatch;
   readonly desktopOwned?: boolean;
   readonly pid?: number;
   readonly birth?: string;
@@ -70,6 +71,14 @@ export class CodexStore {
         ...(typeof spec["group"] === "string" ? { group: spec["group"] } : {}),
       },
       ...(typeof data["uncertain"] === "string" ? { uncertain: data["uncertain"] } : {}),
+      ...(data["confirmed"] === undefined
+        ? {}
+        : {
+            confirmed: {
+              id: text(object(data["confirmed"])["id"]),
+              messageIds: array(object(data["confirmed"])["messageIds"]).map(text),
+            },
+          }),
       ...(typeof data["desktopOwned"] === "boolean" ? { desktopOwned: data["desktopOwned"] } : {}),
       ...(typeof data["pid"] === "number" ? { pid: data["pid"] } : {}),
       ...(typeof data["birth"] === "string" ? { birth: data["birth"] } : {}),

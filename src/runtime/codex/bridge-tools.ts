@@ -90,7 +90,9 @@ export const callBridgeTool = async (d: Deps, scope: BridgeScope, name: string, 
       const status = args["status"];
       if (status !== undefined && status !== "working" && status !== "waiting")
         throw new Refusal("Invalid report status");
-      return { delivery: await report(d, scope.key, boundedText(args["text"]), status) };
+      return {
+        delivery: await report({ ...d, lifecycleHooks: "disabled" }, scope.key, boundedText(args["text"]), status),
+      };
     }
     case "dori_ready": {
       const args = argumentsOf(input, ["text", "evidence"]);
@@ -98,7 +100,7 @@ export const callBridgeTool = async (d: Deps, scope: BridgeScope, name: string, 
       if (evidence.length < 1 || evidence.length > 16) throw new Refusal("READY requires 1 to 16 evidence links");
       return {
         delivery: await ready(
-          d,
+          { ...d, lifecycleHooks: "disabled" },
           scope.key,
           boundedText(args["text"]),
           evidence.map((value) => boundedText(value, 2048)),

@@ -8,6 +8,7 @@ import type {
   CreateSpec,
   DeliverOptions,
   DeliverOutcome,
+  DeliveryBatch,
   Key,
   Probe,
   ReadOptions,
@@ -25,6 +26,7 @@ import { CodexStore, reference } from "./store.ts";
 import { defaultCommand, probeThread, readThread, startParams, type Environment } from "./threads.ts";
 import { watchIdle } from "./watch.ts";
 import { closeWorker, probeWorker, readWorker, startWorker } from "./workers.ts";
+import { acknowledgeDelivery, confirmedDelivery } from "./inbox-journal.ts";
 
 /** Shared-daemon client. Closing Dori sessions never stops the desktop daemon. */
 export class CodexRuntime implements SessionRuntime {
@@ -83,10 +85,16 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   async start(ref: SessionRef, command: string): Promise<void> {
-    const entry = await this.store.owned(ref);
+    await this.store.owned(ref);
     if (!ref.id.startsWith("worker-"))
       throw new CodexError("unsupported", "Agent prompts require startAgent, never a shell command");
-    await startWorker(this.store, entry, command, this.env);
+    const release = takeInboxLock(`${this.store.path(ref.id)}.submit-lock`, Date.now());
+    if (!release) throw new CodexError("unsupported", "A submission is still in progress");
+    try {
+      await startWorker(this.store, await this.store.owned(ref), command, this.env);
+    } finally {
+      release();
+    }
   }
 
   async startAgent(ref: SessionRef, launch: AgentLaunch): Promise<void> {
@@ -134,6 +142,14 @@ export class CodexRuntime implements SessionRuntime {
     return deliver(this.store, this.connection, ref, prompt, opts);
   }
 
+  confirmedDelivery(ref: SessionRef): Promise<DeliveryBatch | undefined> {
+    return confirmedDelivery(this.store, ref);
+  }
+
+  acknowledgeDelivery(ref: SessionRef, batchId: string): Promise<void> {
+    return acknowledgeDelivery(this.store, ref, batchId);
+  }
+
   async submitTyped(ref: SessionRef, _into: AgentIdentity): Promise<SubmitResult> {
     await this.store.owned(ref);
     return "changed";
@@ -148,11 +164,18 @@ export class CodexRuntime implements SessionRuntime {
   }
 
   async close(ref: SessionRef, _scope?: CloseScope): Promise<void> {
-    const entry = await this.store.owned(ref, true);
-    if (entry.closed) return;
-    if (ref.id.startsWith("worker-")) await closeWorker(entry);
-    else await this.connection.call("thread/unsubscribe", { threadId: ref.id });
-    await this.store.save({ ...entry, closed: true });
+    await this.store.owned(ref, true);
+    const release = takeInboxLock(`${this.store.path(ref.id)}.submit-lock`, Date.now());
+    if (!release) throw new CodexError("unsupported", "A submission is still in progress");
+    try {
+      const entry = await this.store.owned(ref, true);
+      if (entry.closed) return;
+      if (ref.id.startsWith("worker-")) await closeWorker(entry);
+      else await this.connection.call("thread/unsubscribe", { threadId: ref.id });
+      await this.store.save({ ...entry, closed: true });
+    } finally {
+      release();
+    }
   }
 
   watchIdle(callback: (ref: SessionRef) => Promise<void>): Promise<() => void> {
