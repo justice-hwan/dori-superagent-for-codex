@@ -747,6 +747,25 @@ Existing host mounts, firmlinks or hard links that expose writable storage at a
 protected path remain an explicit deployment invariant; no mount scanning was
 added and no mount was created.
 
+## Review MCP isolation and foreign lane keys
+
+The exact `b8c60b6` formal review blocked two findings after its independent
+APPROVE and four successful remote CI jobs. Review threads were read-only but
+kept MCP servers inherited from the user Codex config, and `dori_start` reused
+done or lost lane keys owned by another workspace.
+
+Before owner edits, `/tmp/dori-review-bridge-isolation-red.log` recorded 1 pass
+and 3 failures. A real review `thread/start` through the fake daemon, with a
+fixture `CODEX_HOME` declaring two harmless servers, carried no MCP override.
+The actual `dori_start` management tool rewrote a foreign done lane and a
+foreign lost lane to this workspace and overwrote their briefs. Reusing an
+archived key from the same workspace already passed.
+
+The managed-role override is now a shared helper, applied to review threads as
+well; the user's Codex config is never edited. `dori_start` refuses a key whose
+existing lane belongs to another workspace before writing anything. Same
+workspace reuse, canonical spawn and worker contracts are unchanged.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

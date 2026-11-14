@@ -131,6 +131,20 @@ export const pinHostRuntime = (cwd: string, env: Environment) => {
   };
 };
 
+/**
+ * Managed and review threads expose no unrelated user MCP processes. This is a per-thread override that disables
+ * every server the user's Codex config declares; the user's config is never edited.
+ */
+export const disabledUserMcpServers = (env: Environment): Record<string, { enabled: false }> => {
+  const codexConfig = join(env["CODEX_HOME"] || join(env["HOME"] || homedir(), ".codex"), "config.toml");
+  const inherited: Record<string, unknown> = existsSync(codexConfig)
+    ? object(Bun.TOML.parse(readFileSync(codexConfig, "utf8")))
+    : {};
+  return Object.fromEntries(
+    Object.keys(object(inherited["mcp_servers"] ?? {})).map((name) => [name, { enabled: false as const }]),
+  );
+};
+
 export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) => {
   if (spec.role !== "lead" && spec.role !== "lane" && spec.role !== "duty")
     throw new CodexError("unsupported", "No bridge for workers");
@@ -149,15 +163,7 @@ export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) 
   writeFileSync(path, JSON.stringify(scope), { mode: 0o600, flag: "wx" });
   const names = bridgeTools(role).map((tool) => tool.name);
   if (role === "lead" && adapterConfig(home)) names.push("dori_job_status", "dori_report_outcome");
-  // Managed roles expose their fixed management server, not unrelated user MCP
-  // processes. This is a per-thread override; the user's config is never edited.
-  const codexConfig = join(env["CODEX_HOME"] || join(env["HOME"] || homedir(), ".codex"), "config.toml");
-  const inherited: Record<string, unknown> = existsSync(codexConfig)
-    ? object(Bun.TOML.parse(readFileSync(codexConfig, "utf8")))
-    : {};
-  const disabled = Object.fromEntries(
-    Object.keys(object(inherited["mcp_servers"] ?? {})).map((name) => [name, { enabled: false }]),
-  );
+  const disabled = disabledUserMcpServers(env);
   return {
     config: {
       sandbox_workspace_write: { writable_roots: [], exclude_tmpdir_env_var: false, exclude_slash_tmp: false },

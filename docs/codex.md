@@ -77,7 +77,10 @@ receives only `dori_report` and `dori_ready` for itself. These tools invoke trus
 host lifecycle code with a fixed instance/workspace and role capability.
 Management tool calls receive scoped preauthorization; ordinary tools remain
 `workspace-write` and native approval requests remain with the desktop.
-Unrelated inherited MCP servers are disabled only on these managed threads.
+Unrelated inherited MCP servers are disabled on these managed threads and on
+native review threads. `dori_start` refuses an existing lane key whose
+workspace differs from the caller's, including done and lost lanes, before it
+writes a brief or record; an archived key from the same workspace can be reused.
 Management reports and READY calls do not run configured lifecycle hooks.
 Those hooks execute unrestricted host commands, whose scripts or dependencies
 could be writable by a sandboxed lane. Operator CLI lifecycle hooks retain their
@@ -191,7 +194,9 @@ Every native launch validates that its authority home is outside writable
 workspace and temporary roots, including workers and launches with the stdio
 bridge unset. Configuration and ownership records must remain protected in
 both modes.
-Native reviews always use a fresh read-only thread; their default deadline is
+Native reviews always use a fresh read-only thread with every inherited user MCP
+server disabled, so hostile review content cannot reach preapproved mutating
+tools. Their default deadline is
 120 seconds, configurable with `DORI_CODEX_REVIEW_TIMEOUT_MS`. Cancellation
 interrupts only the review turn created by that invocation.
 
