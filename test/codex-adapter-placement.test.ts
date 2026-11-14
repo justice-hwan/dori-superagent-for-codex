@@ -46,6 +46,8 @@ test.each([
   "create-require",
   "create-require-forged-base",
   "create-require-symlink",
+  "create-require-bare-package",
+  "create-require-scoped-package",
 ] as const)(
   "tool discovery refuses %s adapter dependencies before executing them, without an admitted job",
   async (mode) => {
@@ -72,12 +74,25 @@ test.each([
     if (mode === "opaque-import") load = `await import(${JSON.stringify(payload)}.slice(0));`;
     if (mode === "opaque-require") load = `require(${JSON.stringify(payload)}.slice(0));`;
     if (mode.startsWith("create-require")) {
-      const base =
-        mode === "create-require-forged-base" ? JSON.stringify(join(trusted, "other.ts")) : "import.meta.url";
+      const base = mode.endsWith("-package")
+        ? JSON.stringify(join(f.spec.cwd, "consumer.cjs"))
+        : mode === "create-require-forged-base"
+          ? JSON.stringify(join(trusted, "other.ts"))
+          : "import.meta.url";
       let target = payload;
       if (mode === "create-require-symlink") {
         target = join(trusted, "runtime-alias.ts");
         symlinkSync(payload, target);
+      }
+      if (mode.endsWith("-package")) {
+        target = mode === "create-require-scoped-package" ? "@fixture/dependency" : "fixture-dependency";
+        const dependency = join(f.spec.cwd, "node_modules", target);
+        mkdirSync(dependency, { recursive: true });
+        writeFileSync(join(dependency, "package.json"), JSON.stringify({ name: target, main: "./index.cjs" }));
+        writeFileSync(
+          join(dependency, "index.cjs"),
+          `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "escaped"); throw new Error("Workspace package executed");`,
+        );
       }
       load = `import {createRequire} from "node:module"; const load = createRequire(${base}); load(${JSON.stringify(target)});`;
     }

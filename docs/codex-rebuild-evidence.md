@@ -153,11 +153,13 @@ and runtime variables unset:
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 253 files passed.
-- Harness tests: **532 passed, 0 failed** across 63 files.
+- Source-size gate: 255 files passed.
+- Harness tests: **547 passed, 0 failed** across 64 files.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
-The complete passing run is `/tmp/dori-lock-worker-full-ci.log`.
+The complete passing run is `/tmp/dori-vm-loader-final-ci.log`.
+The preceding lifecycle correction is recorded separately in
+`/tmp/dori-lock-worker-full-ci.log`.
 The preceding exception-boundary correction is recorded separately in
 `/tmp/dori-adapter-exception-final-ci.log`.
 The preceding runtime-loader correction is recorded separately in
@@ -169,7 +171,7 @@ runtime-selection tests to fail. Only that stage was repeated with those
 variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
 392/0 result. No passed stage was repeated and no legacy test was changed.
 Earlier isolated runs skipped eight external hc/herdr cases because those
-binaries were absent from their test PATH; the latest run reports all 532
+binaries were absent from their test PATH; the latest run reports all 547
 harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -390,9 +392,52 @@ Focused combined coverage passed 12 tests in
 0 with 532 harness and 392 messenger passes, both typechecks, Knip and the
 253-file LOC gate. No suppression, skipped test, timeout increase, root
 package/lock change, auth retry or partial-candidate native/model acceptance
-was used. Because these fixes affect storage and worker lifecycle, final-source
-autonomous acceptance must be coordinated after the combined source is frozen;
-the earlier native evidence is not retagged as that still-pending acceptance.
+was used. Because these fixes affect storage and worker lifecycle, the
+administrator authorized one affected-source autonomous acceptance at `4cfb61f`.
+It passed with real lead self-start, lane Python CSV computation (five rows,
+sum 167), report/READY, lead evidence reading and `done` returning `closed:true`.
+All five owned records closed without uncertainty/confirmation; both worker
+PIDs and three exact capability-path sidecars were absent after cleanup.
+The accepted receipt is `/tmp/dori-lifecycle-acceptance-4cfb61f.json`; three
+immutable raw turns under
+`$HOME/.local/share/dori/lifecycle-autonomous-home-sfcMFe` retain hashes, IDs and
+wall/monotonic origins. This source-specific acceptance is not repeated or
+retagged for the subsequent adapter-only correction.
+
+## Bare-package loader correction
+
+The formal `4cfb61f` review found that Bun 1.4.4's file plugin does not intercept
+bare package names. A real workspace package executed through a forged
+`createRequire()` base despite the earlier absolute-path guard. Both bare and
+scoped discovery cases fail on unchanged owners. Extended factory, call,
+serialization and close cases also fail for bare, scoped and pre-cached
+workspace packages: `/tmp/dori-bare-package-lifecycle-red.log` records 14
+meaningful failures while the Node/Bun builtin positive control still passes.
+The corrected owners were immediately restored byte for byte after that run.
+
+The protected unsplit ESM bundle now has an explicit `SourceTextModule` linker
+for static/dynamic ESM requests, with only actual Node/Bun builtins exposed
+through `SyntheticModule`. A separate execution-scoped CommonJS resolution
+check runs before cache lookup and is independent of caller-selected bases.
+Top-level await is refused; async factories, admitted-thread callbacks and
+host-owned failure materialization remain supported. Config fields, static
+exports and factory API are unchanged.
+
+Pinned runtime probes excluded two partial approaches: CommonJS hooks alone
+miss dynamic ESM, and a global `onLoad` callback cannot fall through by returning
+undefined. The explicit VM evaluation preserves execution context, verified
+before implementation. No one-package filter or type suppression was added.
+
+Focused corrected coverage passed 44 cases. Full
+`/tmp/dori-vm-loader-final-ci.log` exited 0 with 547 harness and 392 messenger
+passes, both typechecks, Knip and the 255-file LOC gate. A first-bound positive
+case performs actual SQLite work, uses static/dynamic Node builtins and
+CommonJS aliases, reads configuration through `Bun.file`, awaits the real
+admitted-thread callback and constructs the expected CLI metadata using
+`process.execPath` and explicitly initialized `import.meta.dir`.
+Installed-MCP plain-error controls preserve Error identity and diagnostics.
+No new native/model, UI/timing, historical adapter, authentication or publishing
+run was used for this correction.
 
 ## Autonomous lead acceptance
 

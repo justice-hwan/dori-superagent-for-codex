@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 
-const load = createRequire(import.meta.url);
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const object = (value: unknown): Record<string, unknown> => {
@@ -13,6 +12,7 @@ export const leadTools = ["dori_job_status", "dori_report_outcome"].map((name) =
 }));
 export const createPersonalTools = async (value: unknown) => {
   const config = object(JSON.parse(readFileSync(String(object(value)["configPath"]), "utf8")));
+  const load = createRequire(typeof config["base"] === "string" ? config["base"] : import.meta.url);
   await Promise.resolve();
   if (config["phase"] === "factory") load(String(config["payload"]));
   return {

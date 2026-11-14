@@ -162,12 +162,16 @@ dependency must be outside agent-writable roots. Before discovery imports the
 adapter, core builds one protected bundle with macros disabled, rejects unresolved
 runtime imports, and validates every resolved input, including symlinked packages.
 Only builtin imports remain external. The immutable bundle is reused by that
-bridge process. Its ESM entry must load synchronously, without top-level await;
-async initialization belongs in `createPersonalTools`. Core retains a runtime
-module-resolution policy during entry evaluation, factory/tool calls, result
-serialization and close. Filesystem module loads through runtime aliases such
-as `createRequire()` are refused even when the compiler omitted them from its
-manifest. Static bundled dependencies and runtime builtins remain supported.
+bridge process. Its ESM entry must initialize without top-level await; async
+initialization belongs in `createPersonalTools`. An explicit module linker
+permits only actual Node/Bun builtins for static and dynamic ESM requests.
+CommonJS resolution is checked before its cache, including bare/scoped packages
+and caller-selected `createRequire()` bases. Bun's file plugin alone is not the
+authority for bare package names. The policy remains active during entry
+evaluation, factory/tool calls, result serialization and close. Static bundled
+dependencies and runtime builtins remain supported. The default runtime realm
+and explicit `import.meta` URL/path/directory metadata preserve trusted factory
+globals and Error identity; this does not change the private adapter API.
 Thrown failures are converted inside the policy into host-owned errors with
 primitive text messages, so MCP formatting cannot execute deferred adapter
 getters, string conversions or JSON callbacks outside the boundary.
