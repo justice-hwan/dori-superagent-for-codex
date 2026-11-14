@@ -1,0 +1,8 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "module": "Preserve",
+    "lib": ["ESNext"]
+  },
+  "include": ["src", "test"]
+}

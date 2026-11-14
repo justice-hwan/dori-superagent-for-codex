@@ -1,0 +1,108 @@
+import { linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { hostname } from "node:os";
+import { Database, SQLiteError } from "bun:sqlite";
+import { INBOX_LOCK_STALE_MS } from "./store-types.ts";
+
+const readOrUndefined = (path: string): string | undefined => {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+};
+
+const pidAlive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === "EPERM";
+  }
+};
+
+/** An unreadable lock (a holder that died between create and write) is judged by the file's age. */
+function lockStale(path: string, content: string, now: number): boolean {
+  let lock: { pid?: unknown; host?: unknown; at?: unknown } = {};
+  try {
+    lock = JSON.parse(content) as typeof lock;
+  } catch {
+    // fall through to the file's mtime
+  }
+  // On this host the pid decides: a live holder keeps its lock however long a herdr call takes, or a second flush
+  // would deliver the same batch again. The age rule is only for locks from another host or locks that can't be read.
+  if (lock.host === hostname() && typeof lock.pid === "number") return !pidAlive(lock.pid);
+  const at =
+    typeof lock.at === "number"
+      ? lock.at
+      : (() => {
+          try {
+            return statSync(path).mtimeMs;
+          } catch {
+            return now;
+          }
+        })();
+  return now - at > INBOX_LOCK_STALE_MS;
+}
+
+/**
+ * `reservationAuthoritative` is for locks every holder of which also holds the gate reservation: once it is acquired,
+ * leftover metadata can only name a dead holder, even if its pid now belongs to an unrelated live process.
+ */
+export function takeInboxLock(
+  path: string,
+  now: number,
+  options: { readonly reservationAuthoritative?: boolean } = {},
+): (() => void) | undefined {
+  // The OS reservation covers acquisition, reclamation and the holder's
+  // lifetime. Its persistent inode must not be unlinked between contenders.
+  const gate = new Database(`${path}.gate.sqlite`, { create: true });
+  let held = false;
+  const mine = JSON.stringify({ pid: process.pid, host: hostname(), at: now });
+  try {
+    try {
+      gate.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
+    } catch (error) {
+      if (error instanceof SQLiteError && error.code === "SQLITE_BUSY") return undefined;
+      throw error;
+    }
+    for (let tries = 0; tries < 2; tries++) {
+      try {
+        writeFileSync(path, mine, { flag: options.reservationAuthoritative ? "w" : "wx" });
+        held = true;
+        return () => {
+          if (!held) return;
+          held = false;
+          try {
+            if (readOrUndefined(path) === mine) rmSync(path, { force: true });
+          } finally {
+            gate.close(true);
+          }
+        };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+      const seen = readOrUndefined(path);
+      if (seen === undefined) continue;
+      if (!lockStale(path, seen, now)) return undefined;
+      const aside = `${path}.${process.pid}.stale`;
+      try {
+        renameSync(path, aside);
+      } catch {
+        continue;
+      }
+      if (readOrUndefined(aside) !== seen) {
+        try {
+          linkSync(aside, path);
+        } catch {
+          // A legacy writer replaced the path; its ownership is not ours.
+        }
+        rmSync(aside, { force: true });
+        return undefined;
+      }
+      rmSync(aside, { force: true });
+    }
+    return undefined;
+  } finally {
+    if (!held) gate.close(true);
+  }
+}

@@ -1,0 +1,34 @@
+# dori-superagent container recipe — one long-lived container, all state in volumes.
+# First run and daily use are documented in docs/container.md.
+services:
+  dori:
+    build:
+      context: .
+    image: dori-superagent:local
+    container_name: dori
+    init: true
+    # panes are hosted by the herdr server inside the container; a TTY is only needed
+    # by the `docker exec -it` sessions that attach to them
+    tty: true
+    stdin_open: true
+    # the container idles in sleep; work happens through docker exec
+    command: ["sleep", "infinity"]
+    # sized like a small dev machine: lanes run builds and tests of their own
+    cpus: "4"
+    mem_limit: 8g
+    # no credentials and no secrets in this file or in the image; interactive logins
+    # (gh, agent-messenger, omo providers) are done once inside the running container
+    # and persist in the volumes below
+    volumes:
+      - dori-state:/home/dori/.dori
+      - omo-state:/home/dori/.omo
+      - gh-auth:/home/dori/.config/gh
+      - messenger-auth:/home/dori/.config/agent-messenger
+      - projects:/home/dori/projects
+
+volumes:
+  dori-state: {}
+  omo-state: {}
+  gh-auth: {}
+  messenger-auth: {}
+  projects: {}
