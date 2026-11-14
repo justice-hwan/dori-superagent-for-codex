@@ -8,6 +8,8 @@ export type RecordEntry = {
   readonly spec: CreateSpec;
   readonly closed: boolean;
   readonly uncertain?: string;
+  /** Recorded before the MCP admission check; ordinary operations refuse the thread until admission commits. */
+  readonly admission?: "pending";
   readonly confirmed?: DeliveryBatch;
   readonly desktopOwned?: boolean;
   readonly pid?: number;
@@ -71,6 +73,7 @@ export class CodexStore {
         ...(typeof spec["group"] === "string" ? { group: spec["group"] } : {}),
       },
       ...(typeof data["uncertain"] === "string" ? { uncertain: data["uncertain"] } : {}),
+      ...(data["admission"] === "pending" ? { admission: "pending" as const } : {}),
       ...(data["confirmed"] === undefined
         ? {}
         : {
@@ -84,6 +87,8 @@ export class CodexStore {
       ...(typeof data["birth"] === "string" ? { birth: data["birth"] } : {}),
     };
     if (entry.closed && !allowClosed) throw new CodexError("ownership", "Codex session is closed");
+    if (entry.admission === "pending" && !allowClosed)
+      throw new CodexError("ownership", "Codex session admission is pending");
     return entry;
   }
   async entries(): Promise<readonly RecordEntry[]> {

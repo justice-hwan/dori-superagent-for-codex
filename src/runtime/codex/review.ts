@@ -1,3 +1,4 @@
+import { takeInboxLock } from "../../inbox-lock.ts";
 import type { CreateSpec } from "../types.ts";
 import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore, RecordEntry } from "./store.ts";
@@ -9,8 +10,8 @@ type ReviewResult = { readonly stdout: string; readonly code: number; readonly s
 /**
  * Closes a thread whose MCP admission was refused. thread/archive is the strongest documented close: it shuts the
  * thread down even while another client is subscribed, but still returns success if that shutdown times out, so MCP
- * teardown is not confirmed. The refusal stays the thrown error; a failed close becomes its cause and leaves the
- * owned record uncertain for later recovery, and the record is closed only after the archive succeeds.
+ * teardown is not confirmed. The refusal is always the thrown error; archive and persistence failures are attached as
+ * its cause. The record closes only after the archive succeeds, otherwise it stays uncertain for later recovery.
  */
 export const refuseAdmittedThread = async (
   connection: CodexConnection,
@@ -19,14 +20,66 @@ export const refuseAdmittedThread = async (
   refusal: unknown,
 ): Promise<never> => {
   const primary = refusal instanceof Error ? refusal : new CodexError("unsupported", String(refusal));
+  const failures: unknown[] = [];
+  let archived = false;
   try {
     await connection.call("thread/archive", { threadId: entry.id });
+    archived = true;
   } catch (cleanup) {
-    await store.save({ ...entry, uncertain: "MCP admission was refused but archiving the thread failed" });
-    throw Object.assign(primary, { cause: cleanup });
+    failures.push(cleanup);
   }
-  await store.save({ ...entry, closed: true });
+  try {
+    await store.save(
+      archived
+        ? { ...entry, closed: true }
+        : { ...entry, uncertain: "MCP admission was refused but archiving the thread failed" },
+    );
+  } catch (persistence) {
+    failures.push(persistence);
+  }
+  if (failures.length)
+    Object.assign(primary, {
+      cause: failures.length === 1 ? failures[0] : new AggregateError(failures, "Refused thread cleanup failed"),
+    });
   throw primary;
+};
+
+/** Clears pending admission under the thread's submit lock, refusing if recovery changed the record meanwhile. */
+export const commitAdmittedThread = async (store: CodexStore, entry: RecordEntry): Promise<RecordEntry> => {
+  const release = takeInboxLock(`${store.path(entry.id)}.submit-lock`, Date.now());
+  if (!release) throw new CodexError("uncertain", "Admission cannot commit while another operation holds the thread");
+  try {
+    const current = await store.owned({ runtime: "codex", id: entry.id }, true);
+    if (current.closed || current.admission !== "pending")
+      throw new CodexError("ownership", "Thread record changed before admission was committed");
+    const { admission: _admission, ...admitted } = current;
+    await store.save(admitted);
+    return admitted;
+  } finally {
+    release();
+  }
+};
+
+/**
+ * Records a managed thread as pending before its MCP admission check, then commits admission or refuses the thread.
+ * The check reuses the review deadline because thread starts have no deadline of their own.
+ */
+export const admitManagedThread = async (
+  connection: CodexConnection,
+  store: CodexStore,
+  thread: CreateSpec & { readonly id: string },
+  allowed: ReadonlySet<string>,
+  milliseconds: number,
+): Promise<RecordEntry> => {
+  const { id, ...spec } = thread;
+  const started: RecordEntry = { id, spec, closed: false, admission: "pending" };
+  await store.save(started);
+  try {
+    await assertAdmittedMcpServers(connection, spec.cwd, id, allowed, milliseconds);
+  } catch (error) {
+    await refuseAdmittedThread(connection, store, started, error);
+  }
+  return commitAdmittedThread(store, started);
 };
 
 /** A review owns a fresh read-only thread and only interrupts the turn it started. */

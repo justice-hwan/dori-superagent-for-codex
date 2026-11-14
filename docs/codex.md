@@ -89,9 +89,15 @@ managed `dori` server, refuses the thread before any turn. The thread is
 recorded before that check, and a refused thread is archived with
 `thread/archive`, the strongest documented close: it shuts the thread down even
 while another client is subscribed, but still reports success if that shutdown
-times out, so MCP process teardown is not confirmed. If archiving fails, the
-refusal is still reported, the failure is attached as its cause, and the record
-stays open and marked uncertain for later recovery. A failed, malformed
+times out, so MCP process teardown is not confirmed. The refusal is always the
+reported error: archive and record-save failures are attached as its cause, and a
+failed archive leaves the record open and marked uncertain for later recovery. A
+managed thread is recorded as pending admission before the check; every
+ordinary operation, including delivery, handoff, acknowledgement and the
+management bridge, refuses a pending thread, while closing it archives it.
+Admission commits under the thread's submit lock only if the record is still
+pending and open, so a record that recovery changed in between is never
+overwritten. A pending record left by a crash is therefore never delivered into. A failed, malformed
 or late read does the same, bounded by `DORI_CODEX_REVIEW_TIMEOUT_MS`. A server
 added between the two reads is still spawned when the thread starts, because
 Codex brings MCP servers up at `thread/start`; only an operator

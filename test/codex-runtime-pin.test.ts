@@ -61,15 +61,17 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
     if (readdirSync(sessions).filter((name) => name.endsWith(".execution")).length === 2) executions.resolve();
   };
   const lane = Promise.withResolvers<void>();
-  // The lane is ready when its kickoff delivery releases the submit lock, not when that delivery is admitted.
-  let laneLock: string | undefined;
-  const observeLaneDelivery = () => {
-    if (laneLock && !existsSync(laneLock)) lane.resolve();
+  // The hourly tick releases its loop lock only after the lane kickoff and its lead reports return, each having
+  // already released its submit lock and closed its gate, so cleanup cannot race an hourly worker delivery.
+  const loop = join(authority, "loop");
+  const observeHourlyTick = () => {
+    const last = join(loop, "last-run.json");
+    if (!existsSync(last) || existsSync(join(loop, "lock"))) return;
+    const started = array(object(JSON.parse(readFileSync(last, "utf8")))["started"]).map(text);
+    if (started.some((item) => item.startsWith("late-lane "))) lane.resolve();
   };
-  const watcher = watch(sessions, () => {
-    observeExecutions();
-    observeLaneDelivery();
-  });
+  const loopWatcher = watch(loop, observeHourlyTick);
+  const watcher = watch(sessions, observeExecutions);
   const escaped = join(authority, "task-code-ran");
   let poisoned = false;
   f.onAdmission((id) => {
@@ -83,7 +85,6 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
           readFileSync(bridge, "utf8"),
       );
     }
-    if (name === "Dori lane: late-lane") laneLock = join(sessions, `${id}.json.submit-lock`);
   });
   const env = {
     ...f.env,
@@ -104,6 +105,7 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
   });
   f.cleanup.push(async () => {
     watcher.close();
+    loopWatcher.close();
     if (child.exitCode === null) child.kill();
     await child.exited;
     const runtime = new CodexRuntime(authority, env);

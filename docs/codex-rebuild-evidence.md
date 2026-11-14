@@ -816,6 +816,15 @@ are now recorded first and archived; a failed archive keeps the refusal as the
 error and leaves an uncertain open record. Unconfirmed MCP teardown joins the
 operator allowlist residual.
 
+The reviewer then blocked `fb84cc9`: a failed record save could still replace
+the refusal, the early managed record looked like an ordinary open thread, and
+the test readiness signal preceded the SQLite gate closing.
+`/tmp/dori-admission-recovery-red.log` showed the save error replacing the
+refusal, a crash-left record accepting a delivered turn, and a recovered record
+being overwritten. The refusal now always survives with every secondary failure
+attached, managed threads carry a pending-admission state until a locked commit,
+and the runtime-pin test waits for the hourly tick to release its loop lock.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.
