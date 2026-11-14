@@ -46,13 +46,20 @@ periodic pass retained for reconciliation and nudges.
 Loop workers retain the pinned source and Bun executable. Their local environment
 removes executable search roots writable by the task or native temporary tools,
 and startup loader overrides; certificate variables and trusted configuration
-remain. Worker commands validate their entry directory and canonical target, then
-walk every raw link component of the invocation path in order. A component whose
-device and inode match a writable root is refused before it is followed, so a
-case-variant spelling or a mutable relay cannot be retargeted between validation
-and spawn. Link expansion is bounded and fails closed. Safe configured aliases, including
-relative `..` hops, keep their invocation name. The host memory probe uses the
-system sysctl.
+remain. Worker commands resolve their alias once to its canonical file, validate
+that file and its entry directory, and spawn the canonical file, so no link is
+re-traversed after validation. The raw invocation path is also walked in order;
+a component whose device and inode match a writable root is refused before it
+is followed, so a writable link cannot choose the validated target. Link
+expansion is bounded and fails closed. The original alias is passed as `argv0`:
+native and multi-call programs keep their invocation name, while shebang scripts
+see their canonical script path as `$0`. The host memory probe uses the system
+sysctl.
+
+Deployment invariant: no host mount, firmlink or hard link may expose a
+workspace or temporary subtree at a protected executable, bridge snapshot, home
+or Bun binary path. Spelling and inode checks cannot detect such an existing
+exposure, so it is an operator responsibility shared by every trusted path.
 
 A detached worker waits on its private stdin pipe before entering its loop.
 The launcher observes PID/birth identity, commits ownership, then grants startup.

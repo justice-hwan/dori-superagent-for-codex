@@ -43,10 +43,13 @@ export const trustedPath = (path: string, cwd: string): string => {
   return real;
 };
 
-/** Preserve an invocation alias only when every traversed component is outside native write roots. */
+/**
+ * Resolve an invocation alias once to the canonical file that will run, so spawning never re-traverses links.
+ * The walk refuses aliases whose links pass through native write roots: such a link could choose the target.
+ */
 export const trustedExecutable = (path: string, cwd: string): string => {
   trustedPath(dirname(path), cwd);
-  trustedPath(path, cwd);
+  const canonical = trustedPath(path, cwd);
   const roots = writableRoots(cwd).map((root) => statSync(root, { bigint: true }));
   const pending = path.split("/");
   let current = "/";
@@ -72,7 +75,7 @@ export const trustedExecutable = (path: string, cwd: string): string => {
       pending.unshift(...target.split("/"));
     } else current = next;
   }
-  return path;
+  return canonical;
 };
 
 function snapshot(base: string): string {

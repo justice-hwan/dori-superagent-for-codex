@@ -24,7 +24,8 @@ export const workerExec =
   async (command, argv, options) => {
     const executable = Bun.which(command);
     if (!executable) throw new CodexError("unsupported", `Worker executable is not installed: ${command}`);
-    return spawnExec(trustedExecutable(executable, cwd), argv, options);
+    const canonical = trustedExecutable(executable, cwd);
+    return spawnExec(canonical, argv, { ...options, argv0: executable });
   };
 
 /** Birth time plus an argv marker proves the wrapper even where macOS hides shell environments. */

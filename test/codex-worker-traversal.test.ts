@@ -119,12 +119,13 @@ test.each([false, true])(
     const libexec = join(home, "protected", "libexec");
     mkdirSync(join(libexec, "deep"), { recursive: true });
     const tool = join(parents ? libexec : join(home, "protected"), "implementation");
-    writeFileSync(tool, `#!/bin/sh\nprintf safe > ${quote(marker)}\nprintf '%s\\n' "\${0##*/}"\n`, { mode: 0o755 });
+    symlinkSync(process.execPath, tool);
     symlinkSync(parents ? "../libexec/deep" : tool, join(bin, "relay"));
     const entry = join(bin, "gh");
     symlinkSync(parents ? "relay/../implementation" : "relay", entry);
+    const script = `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "safe"); console.log(process.argv0)`;
 
-    expect(await workerExec(workspace)(entry, [])).toMatchObject({ code: 0, stdout: "gh\n" });
+    expect(await workerExec(workspace)(entry, ["-e", script])).toMatchObject({ code: 0, stdout: `${entry}\n` });
     expect(existsSync(marker)).toBe(true);
   },
 );

@@ -721,6 +721,32 @@ bound restored unbounded expansion; a non-ownership bound error failed closed
 with the wrong kind; the earlier normalization, walker bypass, canonical-name
 and blanket-link mutations still failed as before.
 
+## Canonical worker spawn
+
+The same reviewer blocked `98b30d8`: root identity cannot see a mount or
+firmlink that exposes a writable subtree at another path. Epochs 17 to 19 share
+one cause: spawning the alias re-traversed links after every check. The
+administrator chose to validate once and spawn the canonical file.
+
+Before owner edits, `/tmp/dori-worker-canonical-spawn-red.log` recorded 0 pass
+and 1 failure. A relay in a protected directory, standing in for an exposed
+writable subtree, passed every walker check; retargeted at the existing
+`Bun.spawn` boundary, it ran the writable file instead of the safe one.
+
+On pinned Bun 1.4.4, the spawn `argv0` option reached native children as their
+invocation name but not shebang scripts, which receive their canonical path
+from the kernel. The administrator accepted this contract change: the worker now
+spawns the canonical file with the original alias as `argv0`. The host
+trusted-alias case now uses a compiled native control that exits unless its
+`argv0` is `gh`; the protected multi-hop controls run the pinned Bun binary as
+`gh` and assert `process.argv0`. Each original security assertion is retained.
+
+The walker remains before spawn because a writable link could otherwise choose
+which protected file is validated. A new decoy regression proves that refusal.
+Existing host mounts, firmlinks or hard links that expose writable storage at a
+protected path remain an explicit deployment invariant; no mount scanning was
+added and no mount was created.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

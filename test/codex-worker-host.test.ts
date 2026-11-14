@@ -34,12 +34,19 @@ test.each(["directory", "file-alias", "trusted-alias"] as const)(
     if (mode !== "directory") {
       mkdirSync(prefix);
       const target = mode === "file-alias" ? join(hostile, "gh") : join(trusted, "operator-gh");
-      if (mode === "trusted-alias")
+      if (mode === "trusted-alias") {
+        const source = join(f.root, "operator-gh.ts");
         writeFileSync(
-          target,
-          `#!/bin/sh\ncase "\${0##*/}" in gh) ;; *) exit 17;; esac\nprintf ran > ${quote(trustedMarker)}\nprintf '%s\\n' '{"state":"OPEN"}'\n`,
-          { mode: 0o755 },
+          source,
+          `import { basename } from "node:path";\nimport { writeFileSync } from "node:fs";\nif (basename(process.argv0) !== "gh") process.exit(17);\nwriteFileSync(${JSON.stringify(trustedMarker)}, "ran");\nconsole.log('{"state":"OPEN"}');\n`,
         );
+        const build = Bun.spawn([process.execPath, "build", "--compile", source, "--outfile", target], {
+          cwd: f.root,
+          stdout: "ignore",
+          stderr: "inherit",
+        });
+        expect(await build.exited).toBe(0);
+      }
       symlinkSync(target, join(prefix, "gh"));
     }
     const brief = join(f.spec.cwd, "brief.md");

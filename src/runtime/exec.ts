@@ -3,11 +3,16 @@
 
 export type ExecResult = { readonly code: number; readonly stdout: string; readonly stderr: string };
 /** `onSpawn` gets the running process, so a caller that gives up on it can kill it. */
-export type ExecOptions = { readonly onSpawn?: (proc: { kill(): void }) => void };
+export type ExecOptions = { readonly onSpawn?: (proc: { kill(): void }) => void; readonly argv0?: string };
 export type Exec = (cmd: string, argv: readonly string[], options?: ExecOptions) => Promise<ExecResult>;
 
 export const spawnExec: Exec = async (cmd, argv, options) => {
-  const proc = Bun.spawn([cmd, ...argv], { stdout: "pipe", stderr: "pipe", stdin: "ignore" });
+  const proc = Bun.spawn([cmd, ...argv], {
+    stdout: "pipe",
+    stderr: "pipe",
+    stdin: "ignore",
+    ...(options?.argv0 === undefined ? {} : { argv0: options.argv0 }),
+  });
   options?.onSpawn?.(proc);
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
