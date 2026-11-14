@@ -71,6 +71,11 @@ export const fixture = async () => {
           return;
         }
         if (!ws.data.initialized) return reject(-32000, "Not initialized");
+        if (method === "mcpServerStatus/list") {
+          const outcome = config.status(params, startParams);
+          if (outcome === "hang") return;
+          return "error" in outcome ? reject(-32603, outcome.error) : reply(outcome.result);
+        }
         if (method === "config/read") {
           const outcome = config.read(params);
           return "error" in outcome ? reject(-32603, outcome.error) : reply(outcome.result);

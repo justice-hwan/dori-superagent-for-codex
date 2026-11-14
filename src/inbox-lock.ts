@@ -44,7 +44,15 @@ function lockStale(path: string, content: string, now: number): boolean {
   return now - at > INBOX_LOCK_STALE_MS;
 }
 
-export function takeInboxLock(path: string, now: number): (() => void) | undefined {
+/**
+ * `reservationAuthoritative` is for locks every holder of which also holds the gate reservation: once it is acquired,
+ * leftover metadata can only name a dead holder, even if its pid now belongs to an unrelated live process.
+ */
+export function takeInboxLock(
+  path: string,
+  now: number,
+  options: { readonly reservationAuthoritative?: boolean } = {},
+): (() => void) | undefined {
   // The OS reservation covers acquisition, reclamation and the holder's
   // lifetime. Its persistent inode must not be unlinked between contenders.
   const gate = new Database(`${path}.gate.sqlite`, { create: true });
@@ -59,7 +67,7 @@ export function takeInboxLock(path: string, now: number): (() => void) | undefin
     }
     for (let tries = 0; tries < 2; tries++) {
       try {
-        writeFileSync(path, mine, { flag: "wx" });
+        writeFileSync(path, mine, { flag: options.reservationAuthoritative ? "w" : "wx" });
         held = true;
         return () => {
           if (!held) return;

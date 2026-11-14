@@ -18,7 +18,13 @@ import type {
   SubmitResult,
 } from "../types.ts";
 import { NativeStartUncertain } from "../types.ts";
-import { disabledConfiguredMcpServers, pinHostRuntime, prepareBridge, trustedPath } from "./bridge-install.ts";
+import {
+  assertAdmittedMcpServers,
+  disabledConfiguredMcpServers,
+  pinHostRuntime,
+  prepareBridge,
+  trustedPath,
+} from "./bridge-install.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
 import { runReview } from "./review.ts";
@@ -81,6 +87,17 @@ export class CodexRuntime implements SessionRuntime {
           ...object(bridge.config.mcp_servers),
         };
       response = worker ? undefined : object(await this.connection.call("thread/start", { ...params, config }));
+      if (bridge && response) {
+        const started = text(object(response["thread"])["id"]);
+        const allowed = new Set(Object.keys(object(config["mcp_servers"])));
+        const deadline = Number(this.env["DORI_CODEX_REVIEW_TIMEOUT_MS"] || 120_000);
+        try {
+          await assertAdmittedMcpServers(this.connection, spec.cwd, started, allowed, deadline);
+        } catch (error) {
+          await this.connection.call("thread/unsubscribe", { threadId: started });
+          throw error;
+        }
+      }
     } catch (error) {
       bridge?.discard();
       throw error;

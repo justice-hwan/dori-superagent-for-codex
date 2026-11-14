@@ -82,13 +82,23 @@ that thread's configuration with `config/read`, giving the exact thread folder
 and requesting every layer. Each MCP server declared in the effective config or
 in any returned layer, including untrusted project layers the app-server leaves
 disabled, is disabled for that thread. If the read fails or returns an
-unexpected shape, the thread is not started. The legacy `managed_config` layer
-outranks per-thread overrides, so servers it declares remain the operator's
-responsibility. `dori_start` refuses an existing lane key whose workspace
+unexpected shape, the thread is not started. After `thread/start`, Dori reads
+the configuration again and lists the thread's MCP servers with
+`mcpServerStatus/list`; any server the start did not disable, apart from the
+managed `dori` server, closes the thread before any turn. A failed, malformed
+or late read does the same, bounded by `DORI_CODEX_REVIEW_TIMEOUT_MS`. A server
+added between the two reads is still spawned when the thread starts, because
+Codex brings MCP servers up at `thread/start`; only an operator
+`requirements.toml` MCP allowlist prevents that, and is recommended. The legacy
+`managed_config` layer outranks per-thread overrides, so servers it declares
+remain the operator's responsibility. `dori_start` refuses an existing lane key whose workspace
 differs from the caller's, including done and lost lanes, before it writes a
 brief or record; an archived key from the same workspace can be reused. Lane
 starts for one key are serialized: a concurrent start of the same key is
-refused rather than racing the ownership check and record write.
+refused rather than racing the ownership check and record write. The lane lock
+trusts its SQLite reservation, so metadata left by a crash is replaced even if
+its recorded process ID now belongs to an unrelated live process; other locks
+keep their existing stale-holder rules.
 Management reports and READY calls do not run configured lifecycle hooks.
 Those hooks execute unrestricted host commands, whose scripts or dependencies
 could be writable by a sandboxed lane. Operator CLI lifecycle hooks retain their

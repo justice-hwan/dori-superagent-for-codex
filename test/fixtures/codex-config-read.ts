@@ -10,14 +10,43 @@ import { object } from "../../src/runtime/codex/protocol.ts";
  */
 export class FixtureConfigRead {
   mode: "layers" | "fail" | "malformed" = "layers";
+  statusMode: "list" | "fail" | "malformed" | "hang" = "list";
   projectTrusted = true;
+  lateServer: string | undefined;
   readonly reads: Record<string, unknown>[] = [];
+  readonly statusReads: Record<string, unknown>[] = [];
 
   constructor(private readonly directory: string) {}
 
   read(params: Record<string, unknown>): { readonly error: string } | { readonly result: Record<string, unknown> } {
     this.reads.push(params);
-    return configReadOutcome(this.directory, params, this.mode, this.projectTrusted);
+    const outcome = configReadOutcome(this.directory, params, this.mode, this.projectTrusted);
+    if (this.reads.length < 2 || !this.lateServer || !("result" in outcome)) return outcome;
+    const config = object(outcome.result["config"]);
+    const servers = { ...object(config["mcp_servers"] ?? {}), [this.lateServer]: { command: "/usr/bin/true" } };
+    const late = { name: { type: "user", file: "late" }, version: "late", config: { mcp_servers: servers } };
+    const layers = outcome.result["layers"] === undefined ? undefined : [...(outcome.result["layers"] as unknown[]), late];
+    return { result: { ...outcome.result, config: { ...config, mcp_servers: servers }, ...(layers ? { layers } : {}) } };
+  }
+
+  /** Thread-scoped status: every configured server plus the thread's own, `disabled` when the thread start disabled it. */
+  status(
+    params: Record<string, unknown>,
+    started: Record<string, unknown>,
+  ): "hang" | { readonly error: string } | { readonly result: Record<string, unknown> } {
+    this.statusReads.push(params);
+    if (this.statusMode === "hang") return "hang";
+    if (this.statusMode === "fail") return { error: "MCP status unavailable" };
+    if (this.statusMode === "malformed") return { result: { data: "unparseable" } };
+    const configured = configReadOutcome(this.directory, { cwd: started["cwd"] }, "layers", this.projectTrusted);
+    const effective = "result" in configured ? object(object(configured.result["config"])["mcp_servers"] ?? {}) : {};
+    const own = object(object(started["config"] ?? {})["mcp_servers"] ?? {});
+    const names = new Set([...Object.keys(effective), ...Object.keys(own), ...(this.lateServer ? [this.lateServer] : [])]);
+    const data = [...names].map((name) => ({
+      name,
+      runtimeStatus: object(own[name] ?? {})["enabled"] === false ? "disabled" : "connected",
+    }));
+    return { result: { data, nextCursor: null } };
   }
 }
 

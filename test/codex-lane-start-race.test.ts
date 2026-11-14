@@ -1,6 +1,7 @@
 import { expect, onTestFinished, test } from "bun:test";
 import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
+import { takeInboxLock } from "../src/inbox-lock.ts";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
 import { startLane } from "../src/lanes.ts";
@@ -44,6 +45,30 @@ const settle = async (runs: readonly Promise<unknown>[]) => {
     if (result.status === "rejected" && !(result.reason instanceof Refusal)) throw result.reason;
   return results.map((result) => (result.status === "fulfilled" ? "started" : "refused")).sort();
 };
+
+test("a lane lock left by a crash starts despite its recorded pid now naming a live unrelated process", async () => {
+  const { d, scope } = await leadSetup();
+  const unrelated = Bun.spawn(["/bin/cat"], { stdin: "pipe", stdout: "ignore" });
+  onTestFinished(async () => {
+    unrelated.kill();
+    await unrelated.exited;
+  });
+  const stale = JSON.stringify({ pid: unrelated.pid, host: hostname(), at: d.now() });
+  const lock = join(d.store.root, "lanes", "reused.lock");
+  writeFileSync(lock, stale);
+  const legacy = `${lock}.legacy`;
+  writeFileSync(legacy, stale);
+  const brief = join(d.store.root, "reused-brief.md");
+  writeFileSync(brief, "brief");
+
+  const legacyHeld = takeInboxLock(legacy, d.now()) === undefined;
+  const outcome = await startLane(d, "reused", brief, { cwd: scope.cwd, owner: scope.cwd }).then(
+    () => "started",
+    (error: unknown) => (error instanceof Refusal ? error.message : Promise.reject(error)),
+  );
+  console.info("PID_REUSE_LANE_LOCK", { pid: unrelated.pid, legacyHeld, outcome });
+  expect({ legacyHeld, outcome }).toEqual({ legacyHeld: true, outcome: "started" });
+});
 
 test("two concurrent dori_start calls from one workspace admit exactly one lane for a new key", async () => {
   const { f, d, scope } = await leadSetup();

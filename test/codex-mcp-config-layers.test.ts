@@ -40,7 +40,10 @@ test.each([true, false])("review threads disable user and project MCP servers; p
 
   const listed = servers(f.params());
   console.info("REVIEW_LAYER_SERVERS", { trusted, listed, reads: f.config.reads });
-  expect(f.config.reads).toEqual([{ cwd: f.spec.cwd, includeLayers: true }]);
+  expect(f.config.reads).toEqual([
+    { cwd: f.spec.cwd, includeLayers: true },
+    { cwd: f.spec.cwd, includeLayers: true },
+  ]);
   expect(listed).toEqual({ user_reader: { enabled: false }, project_writer: { enabled: false } });
 });
 
@@ -53,7 +56,10 @@ test("managed role threads disable user and project MCP servers beside the manag
 
   const listed = servers(f.params());
   console.info("MANAGED_LAYER_SERVERS", { listed: Object.keys(listed), reads: f.config.reads });
-  expect(f.config.reads).toEqual([{ cwd: f.spec.cwd, includeLayers: true }]);
+  expect(f.config.reads).toEqual([
+    { cwd: f.spec.cwd, includeLayers: true },
+    { cwd: f.spec.cwd, includeLayers: true },
+  ]);
   expect(Object.keys(listed).sort()).toEqual(["dori", "project_writer", "user_reader"]);
   expect({ user: listed["user_reader"], project: listed["project_writer"] }).toEqual({
     user: { enabled: false },
@@ -91,5 +97,49 @@ test.each(["fail", "malformed"] as const)(
       managed: "refused",
       starts: 0,
     });
+  },
+);
+
+const admission = (run: Promise<unknown>) =>
+  run.then(
+    () => "started",
+    () => "refused",
+  );
+
+test("a server added between config/read and thread/start refuses review and managed threads before any turn", async () => {
+  const { f, env } = await layered();
+  f.config.lateServer = "late_writer";
+  const home = managedHome();
+
+  const review = await admission(
+    new CodexRuntime(f.root, { ...env, DORI_CODEX_REVIEW_TIMEOUT_MS: "20" }).runReview("Late"),
+  );
+  f.config.reads.length = 0;
+  const managed = await admission(
+    new CodexRuntime(home, managedEnv(env, home)).create({ ...f.spec, role: "lead", name: "lead" }),
+  );
+
+  const turns = f.calls.filter((call) => call === "turn/start").length;
+  console.info("LATE_LAYER_SERVER", { review, managed, turns, statusReads: f.config.statusReads.length });
+  expect({ review, managed, turns }).toEqual({ review: "refused", managed: "refused", turns: 0 });
+  expect(f.calls.filter((call) => call === "thread/unsubscribe")).toHaveLength(2);
+});
+
+test.each(["fail", "malformed", "hang"] as const)(
+  "review and managed threads refuse before any turn when the MCP status read is %s",
+  async (mode) => {
+    const { f, env } = await layered();
+    f.config.statusMode = mode;
+    const home = managedHome();
+    const bounded = { ...env, DORI_CODEX_REVIEW_TIMEOUT_MS: "20" };
+
+    const review = await admission(new CodexRuntime(f.root, bounded).runReview("Status"));
+    const managed = await admission(
+      new CodexRuntime(home, managedEnv(bounded, home)).create({ ...f.spec, role: "lead", name: "lead" }),
+    );
+
+    const turns = f.calls.filter((call) => call === "turn/start").length;
+    console.info("STATUS_READ_FAILURE", { mode, review, managed, turns });
+    expect({ review, managed, turns }).toEqual({ review: "refused", managed: "refused", turns: 0 });
   },
 );

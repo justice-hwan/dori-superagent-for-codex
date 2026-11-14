@@ -153,7 +153,7 @@ export class Store {
 
   /** The same lock, per lane key: one start owns the key's ownership check and record write at a time. */
   lockLane(key: string, now: number): (() => void) | undefined {
-    return takeInboxLock(join(this.root, "lanes", `${key}.lock`), now);
+    return takeInboxLock(join(this.root, "lanes", `${key}.lock`), now, { reservationAuthoritative: true });
   }
 
   /** Sessions with queued messages. */

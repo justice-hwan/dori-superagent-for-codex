@@ -790,6 +790,22 @@ per-key lock built on the existing inbox lock, and the workspace ownership check
 runs under it. The legacy `managed_config` layer remains an operator-owned
 residual.
 
+## Admission binding and lane lock reservation
+
+The same reviewer blocked `ff94bfc`: a server added between `config/read` and
+`thread/start` had no override, and a reused process ID could leave a crashed
+lane start locked. Codex sources showed no per-thread deny-all setting and that
+MCP servers start at `thread/start`, so the administrator chose a post-start
+check. `/tmp/dori-admission-binding-red.log` recorded every new admission case
+failing on unchanged owners; `/tmp/dori-lane-lock-pid-reuse-red.log` recorded
+the refused lane start against a live unrelated process ID.
+
+Review and managed threads now re-read the configuration and list the thread's
+MCP servers after start, closing the thread before any turn when an undisabled
+server appears or a read fails, is malformed or hangs. The lane lock alone
+treats its SQLite reservation as authoritative. A server added in the window is
+still spawned at thread start; an operator MCP allowlist closes that residual.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

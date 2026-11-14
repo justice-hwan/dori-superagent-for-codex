@@ -15,7 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { CreateSpec } from "../types.ts";
 import { bridgeTools, type BridgeRole } from "./bridge-schema.ts";
-import { array, type CodexConnection, CodexError, object } from "./protocol.ts";
+import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { Environment } from "./threads.ts";
 import { adapterConfig } from "./bridge-jobs.ts";
 
@@ -145,6 +145,46 @@ export const disabledConfiguredMcpServers = async (
   const configs = [response["config"], ...array(response["layers"]).map((layer) => object(layer)["config"])];
   const names = new Set(configs.flatMap((config) => Object.keys(object(object(config)["mcp_servers"] ?? {}))));
   return Object.fromEntries([...names].map((name) => [name, { enabled: false as const }]));
+};
+
+/**
+ * Binds admission to the inspected configuration: after thread/start, every server the configuration or the thread
+ * now reports must be one the start disabled (or the thread's own management server). A server added in between is
+ * still spawned by thread/start; only an operator requirements.toml MCP allowlist prevents that. Fails closed on a
+ * failed, malformed or late read.
+ */
+export const assertAdmittedMcpServers = async (
+  connection: CodexConnection,
+  cwd: string,
+  threadId: string,
+  allowed: ReadonlySet<string>,
+  milliseconds: number,
+): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const expired = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => reject(new CodexError("unsupported", "MCP admission check timed out")), milliseconds);
+  });
+  try {
+    const names = await Promise.race([admittedMcpServerNames(connection, cwd, threadId), expired]);
+    const unexpected = [...names].filter((name) => !allowed.has(name));
+    if (unexpected.length)
+      throw new CodexError("unsupported", `Thread admitted unexpected MCP servers: ${unexpected.join(", ")}`);
+  } finally {
+    clearTimeout(timer);
+  }
+};
+
+const admittedMcpServerNames = async (connection: CodexConnection, cwd: string, threadId: string) => {
+  const names = new Set(Object.keys(await disabledConfiguredMcpServers(connection, cwd)));
+  let cursor: unknown = null;
+  do {
+    const page = object(
+      await connection.call("mcpServerStatus/list", { threadId, ...(cursor === null ? {} : { cursor }) }),
+    );
+    for (const entry of array(page["data"])) names.add(text(object(entry)["name"]));
+    cursor = page["nextCursor"] ?? null;
+  } while (cursor !== null);
+  return names;
 };
 
 export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) => {

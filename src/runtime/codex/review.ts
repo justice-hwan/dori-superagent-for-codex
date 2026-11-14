@@ -1,7 +1,7 @@
 import type { CreateSpec } from "../types.ts";
 import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore } from "./store.ts";
-import { disabledConfiguredMcpServers } from "./bridge-install.ts";
+import { assertAdmittedMcpServers, disabledConfiguredMcpServers } from "./bridge-install.ts";
 import { readThread, startParams, type Environment } from "./threads.ts";
 
 type ReviewResult = { readonly stdout: string; readonly code: number; readonly stderr: string };
@@ -27,17 +27,25 @@ export const runReview = async (
     container: "tab",
   };
   const params = startParams(store.root, spec, env);
+  const disabled = await disabledConfiguredMcpServers(connection, spec.cwd);
   const response = object(
     await connection.call("thread/start", {
       ...params,
       sandbox: "read-only",
-      config: { ...object(params["config"]), mcp_servers: await disabledConfiguredMcpServers(connection, spec.cwd) },
+      config: { ...object(params["config"]), mcp_servers: disabled },
       ...(model ? { model } : {}),
     }),
   );
   const id = text(object(response["thread"])["id"]);
   const entry = { id, spec, closed: false };
   await store.save(entry);
+  try {
+    await assertAdmittedMcpServers(connection, spec.cwd, id, new Set(Object.keys(disabled)), milliseconds);
+  } catch (error) {
+    await connection.call("thread/unsubscribe", { threadId: id });
+    await store.save({ ...entry, closed: true });
+    throw error;
+  }
   const completed = Promise.withResolvers<Record<string, unknown>>();
   let turnId: string | undefined;
   let finished = false;
