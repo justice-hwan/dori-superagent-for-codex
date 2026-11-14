@@ -111,6 +111,7 @@ export const watchIdle = async (
   const disconnected = () => {
     if (stopped) return;
     subscribed.clear();
+    if (!refreshing) return;
     // Rejoining subscriptions is safe. Never replay turn/start or any ordinary RPC.
     void refresh().catch((error: unknown) => {
       if (stopped) return;

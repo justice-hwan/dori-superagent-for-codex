@@ -850,6 +850,14 @@ both watchers live with a bounded sentinel handshake before its initial refresh,
 and fails closed if either stays silent. A test watcher that starts no real
 watch until marked live reproduces the miss deterministically.
 
+Epoch27 found that disconnect-triggered refresh bypassed the readiness gate.
+A controlled watcher plus an actual fake-daemon disconnect reproduced a
+premature empty-queue callback, followed by a durable inbox write stranded
+through successful startup. The silent-watcher case also invoked a callback
+before failing readiness. Reconnect refresh now uses the same readiness state;
+the final initial refresh reconciles records and idle inboxes after liveness.
+Removing that gate reproduces both failures.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.
