@@ -146,7 +146,15 @@ not a benchmark or a speedup claim.
 
 ## Required checks
 
-The combined submission-identity correction passed the complete required local
+The combined worker correction passes **574 harness tests across 69 files and
+392 messenger tests across 54 files**, both strict TypeScript projects, Knip
+and the 264-file raw-line gate. Biome checked 268 files with no errors and the
+existing 7 warnings/8 infos. Its first pipeline then stopped on two nullable
+stdin reads. The corrected pipe/PID boundary passed the changed-file check and
+the failed typecheck plus every remaining stage; the original exit 2 remains
+preserved rather than reported as a successful initial pipeline.
+
+The preceding submission-identity correction at `20a7583` passed the complete required local
 pipeline: **568 harness tests across 67 files and 392 messenger tests across
 54 files**, both TypeScript projects, Knip and the 261-file raw-line gate.
 Biome checked 266 files with no errors and the existing 7 warnings/8 infos.
@@ -596,6 +604,58 @@ with all required static gates. All earlier outputs remain preserved.
 No native/model, desktop, timing, CSV or previously accepted lifecycle run
 was repeated. The actual normal follow-up trace remains scoped to `5add985`.
 The historical watcher timeout remains unproven.
+
+## Worker executable and registration correction
+
+The exact `20a7583` formal review blocked two source-traced worker findings
+despite its independent APPROVE and four successful remote CI jobs. The helper
+exited before merge. No merge release was created.
+
+Before owner edits, `/tmp/dori-worker-boundary-red.log` recorded three actual
+failures. The real default hourly worker completed a pass but ran workspace
+`sysctl` and `gh` instead of the trusted command control. An independent call
+to the real default memory reader also ran workspace `sysctl`. Neither test
+replaced the host probe. A real launcher killed at its actual registration
+save barrier left the unregistered child executing its loop. FIFO output/EOF
+and matching PID/birth observations supplied event-driven proof and cleanup.
+`/tmp/dori-worker-alias-red.log` also reproduced a trusted-directory file alias
+resolving into workspace code.
+
+The combined correction filters only the worker's environment/search path,
+validates resolved executable entries and targets, and pins system `sysctl`.
+Useful configured command aliases retain their invocation name after validation.
+The initial physical-target invocation lost that name; the preserved
+`/tmp/dori-worker-trusted-alias-red.log` exposed this compatibility error.
+`/tmp/dori-worker-entry-red.log` separately proves why mutable workspace entries
+must be refused even when their target is safe.
+
+Startup now waits on a private stdin pipe until PID/birth registration is
+committed. Launcher death closes the pipe, so an unregistered child exits before
+its loop. Existing catchable identity/ENOSPC and group-close assertions remain;
+the ENOSPC fixture targets registration without waiting for forbidden pre-start
+execution. The affected retained suite passed ten cases. The final six direct
+cases passed, including actual child exit and absence of an hourly run file.
+Five isolated causal mutations each failed at their intended boundary and
+restored the captured owner hashes. Removing the system probe pin ran workspace
+`sysctl`; removing canonical target validation ran workspace `gh` through its
+file alias. An unfiltered search path lost the trusted command control while
+entry validation still refused the workspace command. Omitting entry-directory
+validation allowed a mutable workspace entry. Granting startup before saving
+ownership left the actual loop executing after launcher SIGKILL while all three
+catchable identity/ENOSPC controls still passed.
+
+The complete corrected continuation passed 574 harness and 392 messenger tests,
+strict types, Knip and the 264-file LOC gate. The initial gate's nullable-pipe
+type errors remain in `/tmp/dori-worker-boundary-full.log`; the successful
+continuation is `/tmp/dori-worker-boundary-full-continuation.log`. Capturing the
+returned pipe with the existing PID validation preserves direct FD logging and
+fails closed at the process boundary without casts or an optional grant.
+The final packet binds these source and log hashes. Independent reviewer
+continuation, publication and formal gates remain administrator-owned.
+
+No native/model, production, desktop, timing or accepted lifecycle flow was
+repeated. The actual normal native trace remains scoped to `5add985`; the
+historical watcher cause remains unproven.
 
 ## Autonomous lead acceptance
 

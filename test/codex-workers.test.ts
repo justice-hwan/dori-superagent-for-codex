@@ -18,10 +18,6 @@ test.each(["identity", "missing", "persist"] as const)(
     const store = new CodexStore(f.root);
     const entry = await store.owned(ref);
     const childPath = join(store.directory, "spawned-child");
-    const ready = Promise.withResolvers<void>();
-    const watcher = watch(store.directory, (_event, name) => {
-      if (name === "spawned-child") ready.resolve();
-    });
     const script = `printf '%s' "$$" > ${quote(`${childPath}.tmp`)}; /bin/mv ${quote(`${childPath}.tmp`)} ${quote(childPath)}; exec /bin/sleep 30`;
     const command = `/bin/sh -c ${quote(script)}`;
     const host = { ...f.rt.prepareHost(f.spec.cwd), command };
@@ -41,12 +37,12 @@ test.each(["identity", "missing", "persist"] as const)(
           originalSpawn(["/usr/bin/false"], { env: process.env, stdin: "ignore", stdout: "pipe", stderr: "pipe" }),
         );
     else
-      save.mockImplementationOnce(async () => {
-        await ready.promise;
+      save.mockImplementationOnce(async (registration) => {
+        expect(typeof registration.pid).toBe("number");
+        expect(typeof registration.birth).toBe("string");
         throw failure;
       });
     f.cleanup.push(async () => {
-      watcher.close();
       const result = spawned.mock.results[0];
       spawned.mockRestore();
       probe.mockRestore();
@@ -72,7 +68,7 @@ test.each(["identity", "missing", "persist"] as const)(
     const result = spawned.mock.results[0];
     if (result?.type !== "return") throw new TypeError("Expected the owned worker to spawn");
     let descendantRunning = false;
-    if (stage === "persist") {
+    if (stage === "persist" && (await Bun.file(childPath).exists())) {
       const pid = (await Bun.file(childPath).text()).trim();
       const status = Bun.spawn(["/bin/ps", "-p", pid, "-o", "stat="], {
         env: process.env,
@@ -84,6 +80,7 @@ test.each(["identity", "missing", "persist"] as const)(
       await status.exited;
       descendantRunning = state !== "" && !state.startsWith("Z");
     }
+    expect(await Bun.file(childPath).exists()).toBe(false);
     expect({
       reaped: result.value.exitCode !== null || result.value.signalCode !== null,
       descendantRunning,

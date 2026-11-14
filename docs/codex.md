@@ -43,6 +43,17 @@ and local duty/hourly workers; it refuses to duplicate live registered roles.
 The duty worker uses completion events for inbox flushing, with its normal
 periodic pass retained for reconciliation and nudges.
 
+Loop workers retain the pinned source and Bun executable. Their local environment
+removes executable search roots writable by the task or native temporary tools,
+and startup loader overrides; certificate variables and trusted configuration
+remain. Worker commands validate both their entry directory and canonical target,
+preserving safe configured aliases. The host memory probe uses the system sysctl.
+
+A detached worker waits on its private stdin pipe before entering its loop.
+The launcher observes PID/birth identity, commits ownership, then grants startup.
+EOF before that grant exits the unregistered child, including if the launcher is
+killed. This handshake adds no polling or registration retry timeout.
+
 The wrapper enables the constrained stdio management bridge. It installs a
 content-addressed source snapshot under `$HOME/.local/share/dori/codex-bridge`.
 The snapshot, harness home and Bun executable must be outside the task workspace

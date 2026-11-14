@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { freemem, totalmem } from "node:os";
 
 const sysctlMemoryLevel = (): string =>
-  execFileSync("sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000 });
+  execFileSync("/usr/sbin/sysctl", ["-n", "kern.memorystatus_level"], { encoding: "utf8", timeout: 2000 });
 
 /**
  * Percent of memory available to start new work. On Linux, os.freemem() is MemAvailable. On macOS it is only the

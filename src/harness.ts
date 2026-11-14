@@ -7,6 +7,7 @@ import { type Exec, spawnExec } from "./runtime/exec.ts";
 import { HcRuntime } from "./runtime/hc/index.ts";
 import { HerdrRuntime } from "./runtime/herdr/index.ts";
 import { CodexRuntime } from "./runtime/codex/index.ts";
+import { workerExec } from "./runtime/codex/workers.ts";
 import { Runtimes } from "./runtime/registry.ts";
 import { type RuntimeChoice, readRuntimeChoice } from "./runtime/select.ts";
 import { Store } from "./store.ts";
@@ -37,6 +38,10 @@ export type Deps = {
 /** The runtime is chosen on first use, so commands that open or reach no session work without one installed. */
 export const defaultDeps = (): Deps => {
   const store = new Store();
+  const worker = process.env["DORI_CODEX_WORKER"];
+  const workspace = process.env["DORI_CODEX_WORKSPACE"];
+  if (worker && !workspace) throw new TypeError("Codex worker is missing its fixed workspace");
+  const exec = worker && workspace ? workerExec(workspace) : spawnExec;
   let chosen: RuntimeChoice | undefined;
   let runtimes: Runtimes | undefined;
   const choice = (): RuntimeChoice =>
@@ -50,9 +55,9 @@ export const defaultDeps = (): Deps => {
         (k) => {
           switch (k) {
             case "hc":
-              return new HcRuntime(spawnExec);
+              return new HcRuntime(exec);
             case "herdr":
-              return new HerdrRuntime(spawnExec, process.env["DORI_HERDR_SESSION"]);
+              return new HerdrRuntime(exec, process.env["DORI_HERDR_SESSION"]);
             case "codex":
               return new CodexRuntime(store.root);
           }
@@ -61,7 +66,7 @@ export const defaultDeps = (): Deps => {
       return runtimes;
     },
     choice,
-    exec: spawnExec,
+    exec,
     now: Date.now,
     agentCmd: process.env["DORI_AGENT_CMD"] ?? "omo",
     get doriCmd() {

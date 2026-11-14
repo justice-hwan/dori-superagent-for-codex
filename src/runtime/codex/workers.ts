@@ -1,16 +1,38 @@
 import { spawn } from "node:child_process";
 import { closeSync, openSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { type Exec, spawnExec } from "../exec.ts";
 import type { Probe } from "../types.ts";
 import { CodexError } from "./protocol.ts";
 import type { Environment } from "./threads.ts";
 import type { CodexStore, RecordEntry } from "./store.ts";
-import type { pinHostRuntime } from "./bridge-install.ts";
+import { type pinHostRuntime, trustedPath } from "./bridge-install.ts";
+
+const STARTUP_ENV_KEYS = new Set([
+  "ENV",
+  "BASH_ENV",
+  "SHELLOPTS",
+  "BUN_OPTIONS",
+  "BUN_BE_BUN",
+  "NODE_OPTIONS",
+  "NODE_PATH",
+]);
+
+/** Validate the resolved file too: a trusted PATH directory can contain a symlink into the workspace. */
+export const workerExec =
+  (cwd: string): Exec =>
+  async (command, argv, options) => {
+    const executable = Bun.which(command);
+    if (!executable) throw new CodexError("unsupported", `Worker executable is not installed: ${command}`);
+    trustedPath(dirname(executable), cwd);
+    trustedPath(executable, cwd);
+    return spawnExec(executable, argv, options);
+  };
 
 /** Birth time plus an argv marker proves the wrapper even where macOS hides shell environments. */
 const identity = async (pid: number): Promise<string | undefined> => {
   const child = Bun.spawn(["/bin/ps", "eww", "-p", String(pid), "-o", "lstart=", "-o", "command="], {
-    env: { ...process.env, LC_ALL: "C" },
+    env: { LC_ALL: "C" },
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
@@ -41,12 +63,44 @@ export const startWorker = async (
   const operation = command.match(suffix)?.[0];
   if (!operation || command.slice(0, -operation.length) !== host.command)
     throw new CodexError("unsupported", "Worker command must use the pinned runtime and match its loop role");
+  const inherited = { ...env, ...entry.spec.env };
+  const search = new Set<string>();
+  for (const directory of [
+    dirname(host.executable),
+    ...(inherited["PATH"] ?? "").split(delimiter),
+    "/usr/bin",
+    "/bin",
+    "/usr/sbin",
+    "/sbin",
+  ]) {
+    if (!isAbsolute(directory)) continue;
+    try {
+      search.add(trustedPath(directory, entry.spec.cwd));
+    } catch (error) {
+      if (error instanceof CodexError && error.kind === "ownership") continue;
+      if (error instanceof Error && "code" in error && ["ENOENT", "ENOTDIR", "EACCES"].includes(String(error.code)))
+        continue;
+      throw error;
+    }
+  }
+  const environment = Object.fromEntries(
+    Object.entries(inherited).filter(
+      ([name]) =>
+        !STARTUP_ENV_KEYS.has(name) &&
+        !name.startsWith("DYLD_") &&
+        !name.startsWith("LD_") &&
+        !name.startsWith("BASH_FUNC_"),
+    ),
+  );
   const output = openSync(join(store.directory, `${entry.id}.log`), "a", 0o600);
+  // EOF before a committed registration exits without entering the worker command.
+  const guarded = `IFS= read -r registration || exit 1\n[ "$registration" = registered ] || exit 1\n${command}\nstatus=$?\nexit "$status"`;
   // The trailing exit keeps a stable wrapper PID instead of a shell exec optimization.
-  const child = spawn("/bin/sh", ["-c", `${command}\nstatus=$?\nexit "$status"`, `dori-codex-worker=${entry.id}`], {
+  const child = spawn("/bin/sh", ["-c", guarded, `dori-codex-worker=${entry.id}`], {
     env: {
-      ...env,
-      ...entry.spec.env,
+      ...environment,
+      PATH: [...search].join(delimiter),
+      PWD: host.directory,
       DORI_HOME: store.root,
       DORI_RUNTIME: "codex",
       DORI_CODEX_WORKER: entry.id,
@@ -56,7 +110,7 @@ export const startWorker = async (
     },
     cwd: host.directory,
     detached: true,
-    stdio: ["ignore", output, output],
+    stdio: ["pipe", output, output],
   });
   try {
     await new Promise<void>((resolve, reject) => {
@@ -64,10 +118,15 @@ export const startWorker = async (
       child.once("error", reject);
     });
     const pid = child.pid;
-    if (!pid) throw new CodexError("unsupported", "Worker did not receive a PID");
+    const input = child.stdin;
+    if (!pid || !input) throw new CodexError("unsupported", "Worker did not receive its PID and registration pipe");
     const current = await identity(pid);
     if (!current) throw new CodexError("ownership", "Worker identity could not be observed");
     await store.save({ ...entry, pid, birth: current.slice(0, 24) });
+    await new Promise<void>((resolve, reject) => {
+      input.once("error", reject);
+      input.end("registered\n", resolve);
+    });
     child.unref();
   } catch (error) {
     if (child.pid && child.exitCode === null && child.signalCode === null) {
