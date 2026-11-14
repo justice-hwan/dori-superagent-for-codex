@@ -1,6 +1,8 @@
 import type { SessionRef } from "./runtime/types.ts";
 
 export type LaneStatus = "working" | "waiting" | "ready" | "done" | "lost";
+/** Reserved before delivery; order comes from the inbox's durable submission journal. */
+export type SubmissionAttempt = { readonly id: string; readonly order: number };
 
 /**
  * One lane record. `sessionRef` is the session it runs in, on whichever runtime opened it; `paneId`/`tabId` are written
@@ -24,6 +26,7 @@ export type Lane = {
   nudges: number;
   /** Last admitted inbox batch; repeated settlement must not invalidate a later READY. */
   admissionId?: string;
+  admissionOrder?: number;
   final?: { text: string; evidence: string[]; at: number };
   log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
 };
@@ -42,14 +45,21 @@ export type DeliveryAttempt = {
   detail?: string;
   agent?: string;
   pgid?: number;
-  /** Original attempted batch and whether its admission has been durably reconciled. */
+  /** Pre-submission-identity held metadata, retained for recovery of older queues. */
   admission?: { readonly id: string; readonly recorded?: true };
 };
 
 /** A flush lock from another host (or an unreadable one) older than this is taken over; on this host only a dead pid frees it (#108). */
 export const INBOX_LOCK_STALE_MS = 60_000;
 
-export type QueuedMessage = { at: number; from: string; text: string; attempt?: DeliveryAttempt; deliveryId?: string };
+export type QueuedMessage = {
+  at: number;
+  from: string;
+  text: string;
+  attempt?: DeliveryAttempt;
+  deliveryId?: string;
+  submission?: SubmissionAttempt;
+};
 
 export type ReviewReceipt = {
   pr: string;

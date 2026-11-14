@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
-import { admitHeld, admitLane, identifiedInbox } from "./lane-admission.ts";
+import { admitHeld, admitLane, identifiedInbox, reconcileAdmission } from "./lane-admission.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
 import { refText } from "./refs.ts";
@@ -122,6 +122,7 @@ export async function ready(
     const confirmed = await d.runtimes.for(initial.sessionRef).confirmedDelivery?.(initial.sessionRef);
     if (confirmed) admitLane(d, initial.sessionRef, confirmed.id);
     for (const message of identifiedInbox(d, initial.sessionRef)) admitHeld(d, initial.sessionRef, message);
+    reconcileAdmission(d, initial.sessionRef);
     lane = openLane(d, key);
     lane.status = "ready";
     lane.final = { text, evidence: [...evidence], at: now };
@@ -150,6 +151,7 @@ export async function done(d: Deps, key: string): Promise<void> {
     const rt = d.runtimes.for(initial.sessionRef);
     const confirmed = await rt.confirmedDelivery?.(initial.sessionRef);
     if (confirmed) admitLane(d, initial.sessionRef, confirmed.id);
+    reconcileAdmission(d, initial.sessionRef);
     const lane = openLane(d, key);
     if (lane.status !== "ready")
       throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);

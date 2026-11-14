@@ -1,6 +1,6 @@
 # Codex rebuild evidence
 
-Date: November 13, 2026.
+Dates: November 13-14, 2026.
 
 ## Foundation and cleanup
 
@@ -146,7 +146,17 @@ not a benchmark or a speedup claim.
 
 ## Required checks
 
-The latest operator-acknowledgement corrective tree completed the full required
+The combined submission-identity correction passed the complete required local
+pipeline: **568 harness tests across 67 files and 392 messenger tests across
+54 files**, both TypeScript projects, Knip and the 261-file raw-line gate.
+Biome checked 266 files with no errors and the existing 7 warnings/8 infos.
+The full suites ran once after static corrections, at unchanged timeouts.
+The passing output is `/tmp/dori-submission-identity-verified-ci.log`.
+Its exit marker belongs to the existing delivered monitor notification
+`f7dc7de6` at `2026-11-14T05:07:12.215Z`, not to that log file:
+`SUBMISSION_IDENTITY_VERIFIED_EXIT=0` and `watcher completed (exit code 0)`.
+
+The preceding operator-acknowledgement tree at `78c2144` completed the full required
 local pipeline with exit 0 using genuine standalone **Bun 1.4.4**, with injected
 operator home and runtime variables unset:
 
@@ -540,6 +550,52 @@ and operator recovery coverage is controlled production/wire evidence. The
 accepted normal native flow remains bound to `5add985`; the administrator owns
 any decision about further live coverage. The earlier watcher timeout remains
 unproven and is not claimed fixed by this correction.
+
+## Submission identity and ordered recovery correction
+
+The next independent review blocked `78c2144` on two source-traced combinations:
+confirmed resend recovery after interrupted invalidation could reuse the old
+message-derived admission ID, and older held reconciliation could replace the
+newer identity before fresh READY.
+
+Both were reproduced before production owners changed.
+`/tmp/dori-submission-identity-red.log` records 9 passes and 2 failures. Each case
+asserted actual second wire acceptance and a durable confirmed receipt first.
+Recovery then wrongly allowed stale closure in one case and erased the recorded
+fresh result in the other.
+
+The correction reserves a distinct durable submission before native delivery,
+while retaining enqueue message IDs. Queue membership and receipts retain that
+attempt. A separate inbox journal owns monotonic reservation and admission order;
+ordinary lane saves cannot overwrite it. Normal success, receipt recovery and
+held acknowledgement share one admission path. READY and closure reconcile its
+lane projection. Ordering uses durable reservations, not hash or wall-clock order.
+The native batch and public adapter contracts remain unchanged.
+
+The first affected run had 22 passes and 2 failures: existing fault injection
+targeted the first store write, which now occurred before native acceptance.
+Its fault is now armed by the existing actual wire-admission observer, with
+an additional confirmed-receipt precondition and every original assertion
+retained. The corrected affected run passed 52 cases across seven files.
+The final focused baseline passed seven cases, including both original
+reproductions, pre-admission persistence failure and stale lane projection.
+Four causal mutations each produced six passes and one intended failure:
+reusing message identity for attempts, admitting older work as newest, bypassing
+persisted queued reservations, and omitting closure projection reconciliation.
+Each mutated owner was restored byte for byte before the next mutation.
+The first full invocation passed Biome and stopped on two new expected-ID
+typing errors. Explicitly rejecting a missing queued native ID fixed them
+without casts or weakened assertions. The next invocation passed both types
+and Knip, then found a 276-line test file. The four new cases moved unchanged
+to `test/lane-submission.test.ts`, sharing the unchanged acceptance setup in
+`test/fixtures/ready-lane.ts`; every previous assertion remains.
+Both complete suites were still unrun before those static corrections.
+The resulting full pipeline passed 568/0 harness and 392/0 messenger tests,
+with all required static gates. All earlier outputs remain preserved.
+
+No native/model, desktop, timing, CSV or previously accepted lifecycle run
+was repeated. The actual normal follow-up trace remains scoped to `5add985`.
+The historical watcher timeout remains unproven.
 
 ## Autonomous lead acceptance
 

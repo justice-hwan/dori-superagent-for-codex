@@ -3,7 +3,7 @@ import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { resolveTarget } from "./target.ts";
 import { refText } from "./refs.ts";
-import { admitLane, admitMessages, batchIdentity, enqueueInstructions, identifiedInbox } from "./lane-admission.ts";
+import { admitLane, batchIdentity, enqueueInstructions, identifiedInbox, prepareMessages } from "./lane-admission.ts";
 import { confirmJob } from "./runtime/codex/bridge-jobs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
 import { migrating } from "./store-journal.ts";
@@ -110,6 +110,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   if (!READY_TO_READ.includes(status)) return "queued";
   const first = typed[0];
   if (first !== undefined) {
+    const prepared = prepareMessages(d, ref, typed);
     // An earlier pass typed these and only the Enter failed: press Enter, never type them again (#89), and only into
     // the agent they were typed into (#108).
     const into = {
@@ -127,19 +128,20 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
       await holdTyped(d, ref, typed, "a different agent is in the pane than the one the text was typed into");
       return typed.length === queued.length ? "held" : "queued";
     }
-    admitMessages(d, ref, typed);
-    settleInbox(d, ref, typed);
+    admitLane(d, ref, batchIdentity(prepared));
+    settleInbox(d, ref, prepared);
     // Messages queued after the typed batch were not delivered by this Enter; they wait for the next pass.
-    return typed.length === queued.length ? "delivered" : "queued";
+    return prepared.length === queued.length ? "delivered" : "queued";
   }
+  const prepared = prepareMessages(d, ref, queued);
   const body =
-    queued.length === 1
-      ? (queued[0]?.text ?? "")
-      : `${queued.length} messages arrived while you were busy:\n\n` +
-        queued.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
+    prepared.length === 1
+      ? (prepared[0]?.text ?? "")
+      : `${prepared.length} messages arrived while you were busy:\n\n` +
+        prepared.map((m, i) => `(${i + 1}) from ${m.from}:\n${m.text}`).join("\n\n");
   const messageIds =
     rt.kind === "codex"
-      ? queued.map((message) => {
+      ? prepared.map((message) => {
           if (!message.deliveryId) throw new TypeError("Native inbox message is missing its stable identity");
           return message.deliveryId;
         })
@@ -147,17 +149,17 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const batch =
     rt.kind === "codex"
       ? {
-          id: batchIdentity(queued),
+          id: batchIdentity(prepared),
           messageIds,
         }
       : undefined;
   const out = await rt.deliver(ref, body, batch ? { batch } : undefined);
   switch (out.kind) {
     case "delivered":
-      admitMessages(d, ref, queued);
-      settleInbox(d, ref, queued);
+      admitLane(d, ref, batchIdentity(prepared));
+      settleInbox(d, ref, prepared);
       if (batch) await rt.acknowledgeDelivery?.(ref, batch.id);
-      return "delivered";
+      return prepared.length === queued.length ? "delivered" : "queued";
     case "no-agent":
       return "no-agent";
     case "not-ready":
@@ -168,7 +170,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
         out.kind === "typed"
           ? new DeliveryUncertain(out.failure, true, out.into)
           : new DeliveryUncertain(out.failure, false);
-      await recordUncertain(d, ref, queued, e, rt.kind);
+      await recordUncertain(d, ref, prepared, e, rt.kind);
       throw e;
     }
   }
@@ -211,7 +213,6 @@ async function recordUncertain(
     at: d.now(),
     state: e.typed ? "typed" : "ambiguous",
     detail,
-    ...(d.store.laneBySession(ref) ? { admission: { id: batchIdentity(batch) } } : {}),
     ...(e.typed ? e.agent : {}),
   });
   if (!e.typed) await noticeHeld(d, ref, batch, `${runtime} said: ${detail}`);
@@ -223,7 +224,6 @@ async function holdTyped(d: Deps, ref: SessionRef, typed: readonly QueuedMessage
     at: d.now(),
     state: "ambiguous",
     detail: why,
-    ...(d.store.laneBySession(ref) ? { admission: { id: batchIdentity(typed) } } : {}),
   });
   await noticeHeld(d, ref, typed, why);
 }

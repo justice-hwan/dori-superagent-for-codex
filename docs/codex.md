@@ -75,6 +75,19 @@ the held batch first, so later acknowledgements of its remaining entries retain
 that completion. Held entries still require explicit operator recovery.
 `resend` preserves message identity and needs fresh READY after actual delivery.
 
+Message identity and submission identity are separate. Before a new delivery,
+the harness reserves a unique attempt and persists its queue membership under
+the inbox lock. An explicit resend reserves another attempt even when its
+message IDs are unchanged. Confirmed receipts retain that attempt through
+sender failure and recovery.
+
+An inbox journal records reservation order and the newest confirmed admission,
+independently of ordinary lane saves. Older held work cannot move that admission
+backward. READY and closure reconcile the lane record against this journal;
+replaying an older admission preserves completion for newer work. Existing
+held records without ordered metadata remain recoverable without inventing an
+original native batch or comparing timestamps.
+
 ## Desktop behavior
 
 Use the same managed daemon and Codex home as the desktop connection.

@@ -94,7 +94,7 @@ export async function releaseHeld(d: Deps, target: string, index: number, how: "
       if (held?.attempt?.state !== "ambiguous")
         throw new Refusal(`held entry ${index} of ${paneId} changed during recovery`);
       if (how === "ack") confirmJob(d.store, ref, held.text);
-      const { attempt: _, ...fresh } = held;
+      const { attempt: _, submission: _submission, ...fresh } = held;
       return how === "ack"
         ? current.filter((_, i) => i !== selected)
         : current.map((x, i) => (i === selected ? fresh : x));

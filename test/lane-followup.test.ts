@@ -32,23 +32,29 @@ test.each(["admission", "settlement", "acknowledgement"] as const)(
   "fresh READY survives confirmed admission recovery after failed %s",
   async (gap) => {
     const { f, d, ref } = await readyLane();
-    const fail =
-      gap === "admission"
-        ? spyOn(d.store, "saveLane").mockImplementationOnce(() => {
-            throw new Error("admission interrupted");
-          })
-        : gap === "settlement"
-          ? spyOn(d.store, "updateInbox").mockImplementationOnce(() => {
-              throw new Error("settlement interrupted");
+    let restore: (() => void) | undefined;
+    f.onAdmission((id) => {
+      if (id !== ref.id || restore) return;
+      const fail =
+        gap === "admission"
+          ? spyOn(d.store, "saveLane").mockImplementationOnce(() => {
+              throw new Error("admission interrupted");
             })
-          : spyOn(f.rt, "acknowledgeDelivery").mockImplementationOnce(async () => {
-              throw new Error("acknowledgement interrupted");
-            });
+          : gap === "settlement"
+            ? spyOn(d.store, "updateInbox").mockImplementationOnce(() => {
+                throw new Error("settlement interrupted");
+              })
+            : spyOn(f.rt, "acknowledgeDelivery").mockImplementationOnce(async () => {
+                throw new Error("acknowledgement interrupted");
+              });
+      restore = () => fail.mockRestore();
+    });
     try {
       await expect(send(d, "followup", "new task", "lead")).rejects.toThrow(/interrupted/);
     } finally {
-      fail.mockRestore();
+      restore?.();
     }
+    expect(await f.rt.confirmedDelivery(ref)).toBeDefined();
     f.finish(ref.id, "new result");
     await ready(d, "followup", "fresh result", ["fresh.json"]);
 
