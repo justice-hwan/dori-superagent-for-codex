@@ -47,9 +47,10 @@ Loop workers retain the pinned source and Bun executable. Their local environmen
 removes executable search roots writable by the task or native temporary tools,
 and startup loader overrides; certificate variables and trusted configuration
 remain. Worker commands validate their entry directory and canonical target, then
-walk every raw link component of the invocation path in order. A component inside
-a writable root is refused before it is followed, so a mutable relay cannot be
-retargeted between validation and spawn. Safe configured aliases, including
+walk every raw link component of the invocation path in order. A component whose
+device and inode match a writable root is refused before it is followed, so a
+case-variant spelling or a mutable relay cannot be retargeted between validation
+and spawn. Link expansion is bounded and fails closed. Safe configured aliases, including
 relative `..` hops, keep their invocation name. The host memory probe uses the
 system sysctl.
 

@@ -8,6 +8,7 @@ import {
   realpathSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
@@ -28,6 +29,7 @@ const within = (child: string, parent: string) => {
   );
 };
 const writableRoots = (cwd: string) => [realpathSync(cwd), realpathSync(tmpdir()), realpathSync("/tmp")];
+const maxLinkExpansions = 40;
 /** All executable code and authority state must be outside native tool write roots. */
 export const trustedPath = (path: string, cwd: string): string => {
   if (!isAbsolute(path)) throw new CodexError("ownership", "Bridge paths must be absolute");
@@ -45,9 +47,10 @@ export const trustedPath = (path: string, cwd: string): string => {
 export const trustedExecutable = (path: string, cwd: string): string => {
   trustedPath(dirname(path), cwd);
   trustedPath(path, cwd);
-  const roots = writableRoots(cwd);
+  const roots = writableRoots(cwd).map((root) => statSync(root, { bigint: true }));
   const pending = path.split("/");
   let current = "/";
+  let expansions = 0;
   while (pending.length) {
     const name = pending.shift();
     if (!name || name === ".") continue;
@@ -56,9 +59,13 @@ export const trustedExecutable = (path: string, cwd: string): string => {
       continue;
     }
     const next = join(current, name);
-    if (roots.some((root) => within(next, root)))
+    const entry = lstatSync(next, { bigint: true });
+    // Compare identity, not spelling: a case-insensitive or other alias of a root shares its device and inode.
+    if (roots.some((root) => root.dev === entry.dev && root.ino === entry.ino))
       throw new CodexError("ownership", "Worker executable traverses an agent-writable path");
-    if (lstatSync(next).isSymbolicLink()) {
+    if (entry.isSymbolicLink()) {
+      if (++expansions > maxLinkExpansions)
+        throw new CodexError("ownership", "Worker executable link chain exceeds its expansion bound");
       const target = readlinkSync(next);
       if (isAbsolute(target)) current = "/";
       // Do not normalize: a link followed by .. must be traversed before its parent.

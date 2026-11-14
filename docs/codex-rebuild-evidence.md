@@ -694,6 +694,33 @@ packet binds the passing pipeline and every log hash. No native/model,
 production, desktop, timing or accepted lifecycle flow was repeated. The
 historical watcher cause remains unproven.
 
+## Writable root identity and link bound correction
+
+The same reviewer blocked `8745551`: the walker compared component spellings,
+so on a case-insensitive volume `WORKSPACE` reached the writable `workspace`
+root unrefused. A relay retargeted after validation could again run writable
+code, or become a relative self-link that the walker expanded without bound.
+
+This host's APFS volume is case-insensitive: each writable root's swapped-case
+spelling had the root's device and inode. Before owner edits,
+`/tmp/dori-worker-link-identity-red-final.log` recorded 0 pass and 5 failures.
+The workspace, native temporary and `/tmp` case variants each first ran the
+real safe target, then the synchronous `Bun.spawn` retarget ran the private
+writable marker. Two self-links, created at the walker's first visit to the
+relay after initial `realpath` validation, exceeded an event-driven ceiling of
+1000 expansions instead of hanging the test.
+
+The walker now compares each component's device and inode with the writable
+roots before following it, and fails closed with the ownership error after 40
+link expansions. Raw traversal order, `..` handling, invocation names and
+worker registration, environment, certificates and cleanup are unchanged.
+The affected suites passed 31 cases. Eight owner mutations each failed at their
+boundary with exact restoration: removing the identity check ran fifteen
+writable markers; comparing spellings ran the three case variants; removing the
+bound restored unbounded expansion; a non-ownership bound error failed closed
+with the wrong kind; the earlier normalization, walker bypass, canonical-name
+and blanket-link mutations still failed as before.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.
