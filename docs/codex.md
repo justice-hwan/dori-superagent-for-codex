@@ -41,7 +41,15 @@ The existing `up`, `start`, `send`, `report`, `ready`, `duty`, `loop`, `review`
 and merge-gate commands remain the workflow. `up` opens lead/duty Codex threads
 and local duty/hourly workers; it refuses to duplicate live registered roles.
 The duty worker uses completion events for inbox flushing, with its normal
-periodic pass retained for reconciliation and nudges.
+periodic pass retained for reconciliation and nudges. A freshly started macOS
+file watcher can miss writes made before its stream is live, so the idle watch
+confirms each of its two watchers by writing a `.dori-watch-ready` sentinel and
+waiting for its event, rewriting it at most 40 times within the 10 second connect
+deadline, then removes it. Only then does it run its initial refresh, which reads
+every record already written; record events before that point are ignored, and
+every later record write triggers a refresh, so no record written after startup
+is missed. If either watcher never reports the sentinel, startup fails with a
+transport error and both watchers are closed.
 
 Loop workers retain the pinned source and Bun executable. Their local environment
 removes executable search roots writable by the task or native temporary tools,
@@ -102,7 +110,11 @@ holds the thread's submit lock from the pending save until it commits or refuses
 and any refusal, including a refused commit, archives the thread. A pending
 thread is never resumed: probe reports it as unknown, and the duty worker's idle
 watch skips it. That watch archives a pending record whose submit lock it can
-take, meaning its admitter is gone, and leaves one whose lock is still held. The
+take, meaning its admitter is gone, and leaves one whose lock is still held. It attempts each abandoned record
+once per duty-worker lifetime, so a failing archive's own record write cannot
+retrigger it; a new duty start or an explicit close retries. Store setup and the
+first pending save run inside the same cleanup, so a thread started natively is
+always archived or recorded even if that first write fails. The
 lock trusts its SQLite reservation, so a reused process ID in leftover metadata
 cannot keep a dead admitter's record alive. A pending record left by a crash is
 therefore archived when the duty worker next starts or sees a record change, and

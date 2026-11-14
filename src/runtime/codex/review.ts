@@ -61,46 +61,47 @@ export const admitThread = async (
   allowed: ReadonlySet<string>,
   milliseconds: number,
 ): Promise<RecordEntry> => {
-  await store.init();
-  const release = admissionLock(store, pending.id);
-  if (!release) throw new CodexError("uncertain", "Admission could not reserve the new thread");
+  let release: (() => void) | undefined;
   try {
+    await store.init();
+    release = admissionLock(store, pending.id);
+    if (!release) throw new CodexError("uncertain", "Admission could not reserve the new thread");
     await store.save(pending);
-    try {
-      await assertAdmittedMcpServers(connection, pending.spec.cwd, pending.id, allowed, milliseconds);
-      const current = await store.owned({ runtime: "codex", id: pending.id }, true);
-      if (current.closed || current.admission !== "pending")
-        throw new CodexError("ownership", "Thread record changed before admission was committed");
-      const { admission: _admission, ...admitted } = current;
-      await store.save(admitted);
-      return admitted;
-    } catch (refusal) {
-      const current = await store.owned({ runtime: "codex", id: pending.id }, true).catch(() => pending);
-      return await refuseAdmittedThread(connection, store, current, refusal);
-    }
+    await assertAdmittedMcpServers(connection, pending.spec.cwd, pending.id, allowed, milliseconds);
+    const current = await store.owned({ runtime: "codex", id: pending.id }, true);
+    if (current.closed || current.admission !== "pending")
+      throw new CodexError("ownership", "Thread record changed before admission was committed");
+    const { admission: _admission, ...admitted } = current;
+    await store.save(admitted);
+    return admitted;
+  } catch (refusal) {
+    const current = await store.owned({ runtime: "codex", id: pending.id }, true).catch(() => pending);
+    return await refuseAdmittedThread(connection, store, current, refusal);
   } finally {
-    release();
+    release?.();
   }
 };
 
 /**
  * Archives a pending record whose admitter is gone, never resuming or delivering into it. A record whose admission
- * lock is still held belongs to a live admitter and is skipped. Returns a cleanup failure for the caller to report.
+ * lock is still held belongs to a live admitter and is skipped (`attempted` false). Any cleanup failure is returned
+ * for the caller to report.
  */
 export const archiveAbandonedAdmission = async (
   connection: CodexConnection,
   store: CodexStore,
   id: string,
-): Promise<unknown> => {
+): Promise<{ readonly attempted: boolean; readonly failure?: unknown }> => {
   const release = admissionLock(store, id);
-  if (!release) return undefined;
+  if (!release) return { attempted: false };
   try {
     const current = await store.owned({ runtime: "codex", id }, true);
-    if (current.closed || current.admission !== "pending") return undefined;
+    if (current.closed || current.admission !== "pending") return { attempted: false };
     const abandoned = new CodexError("uncertain", "MCP admission was abandoned before it completed");
-    return await refuseAdmittedThread(connection, store, current, abandoned).catch((error: unknown) =>
+    const failure = await refuseAdmittedThread(connection, store, current, abandoned).catch((error: unknown) =>
       error instanceof Error && error.cause !== undefined ? error : undefined,
     );
+    return { attempted: true, ...(failure === undefined ? {} : { failure }) };
   } finally {
     release();
   }

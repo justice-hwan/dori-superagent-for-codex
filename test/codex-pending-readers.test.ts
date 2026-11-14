@@ -15,7 +15,7 @@ const setup = async () => {
   writeFileSync(join(codexHome, "config.toml"), '[mcp_servers.user_reader]\ncommand = "/usr/bin/true"\n');
   const home = mkdtempSync(join(homedir(), ".dori-pending-readers-"));
   onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-  const env = { ...f.env, CODEX_HOME: codexHome, DORI_CODEX_WORKSPACE: f.spec.cwd, DORI_CODEX_REVIEW_TIMEOUT_MS: "20" };
+  const env = { ...f.env, CODEX_HOME: codexHome, DORI_CODEX_WORKSPACE: f.spec.cwd };
   const managed = {
     ...env,
     DORI_HOME: home,
@@ -180,4 +180,69 @@ test("duty refresh skips a pending record whose admitter still holds the thread"
   };
   console.info("LIVE_ADMITTER_SKIPPED", result);
   expect(result).toEqual({ closes: [], resumes: 0, admission: "pending" });
+});
+
+/** Drops the daemon connection, which makes a running watcher refresh, and waits for that refresh's barrier resume. */
+const refreshOnce = async (f: Awaited<ReturnType<typeof fixture>>) => {
+  const resumed = f.nextResume();
+  f.dropClients();
+  await resumed;
+};
+
+test("a consistently failing recovery archive is attempted once per watcher lifetime", async () => {
+  const { f, env, home, managed } = await setup();
+  const { path } = await crashDuringAdmission(f, home, () =>
+    new CodexRuntime(home, managed).create({ ...f.spec, role: "lead", name: "lead" }),
+  );
+  await new CodexRuntime(home, env).create({ ...f.spec, role: "lane", name: "barrier" });
+  f.config.closeMode = "fail";
+  const archives = f.config.closes.length;
+  const stop = await new CodexRuntime(home, managed).watchIdle(async () => undefined);
+  try {
+    for (let refresh = 0; refresh < 3; refresh++) await refreshOnce(f);
+  } finally {
+    stop();
+  }
+  // Any further attempt takes this lock synchronously before the barrier resumes, so it is held or already counted.
+  const probe = takeInboxLock(`${path}.submit-lock`, Date.now(), { reservationAuthoritative: true });
+  probe?.();
+  const record = read(path);
+  const result = {
+    recoveryIdle: probe !== undefined,
+    attempts: f.config.closes.slice(archives).filter((call) => call === "thread/archive").length,
+    closed: record["closed"],
+    admission: record["admission"],
+    uncertain: typeof record["uncertain"],
+  };
+  console.info("RECOVERY_RETRIGGER", result);
+  expect(result).toEqual({ recoveryIdle: true, attempts: 1, closed: false, admission: "pending", uncertain: "string" });
+});
+
+test("a pending record skipped for a live admitter is recovered after that admitter dies", async () => {
+  const { f, env, home, managed } = await setup();
+  const { path } = await crashDuringAdmission(f, home, () =>
+    new CodexRuntime(home, managed).create({ ...f.spec, role: "lead", name: "lead" }),
+  );
+  await new CodexRuntime(home, env).create({ ...f.spec, role: "lane", name: "barrier" });
+  const admitter = takeInboxLock(`${path}.submit-lock`, Date.now());
+  if (!admitter) throw new TypeError("Could not hold the admission lock");
+  const archives = f.config.closes.length;
+  const archived = Promise.withResolvers<void>();
+  f.config.closeObserver = (method) => {
+    if (method === "thread/archive") archived.resolve();
+  };
+
+  const stop = await new CodexRuntime(home, managed).watchIdle(async () => undefined);
+  onTestFinished(stop);
+  const skipped = f.config.closes.length - archives;
+  try {
+    admitter();
+    await archived.promise;
+  } finally {
+    stop();
+  }
+
+  const result = { skipped, closes: f.config.closes.slice(archives) };
+  console.info("LIVE_THEN_DEAD_ADMITTER", result);
+  expect(result).toEqual({ skipped: 0, closes: ["thread/archive"] });
 });

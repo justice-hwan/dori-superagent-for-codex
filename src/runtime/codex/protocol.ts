@@ -1,4 +1,7 @@
 /** Small boundary parsers keep daemon data out of the runtime's internal contracts. */
+/** How long connecting to the shared daemon may take; also bounds the idle watcher's readiness handshake. */
+export const CONNECT_TIMEOUT_MS = 10_000;
+
 export class CodexError extends Error {
   constructor(
     readonly kind: "remote" | "protocol" | "transport" | "ownership" | "unsupported" | "uncertain",
@@ -100,7 +103,7 @@ export class CodexConnection {
       const timeout = setTimeout(() => {
         reject(new CodexError("transport", "Connecting to shared Codex daemon timed out"));
         socket.close();
-      }, 10_000);
+      }, CONNECT_TIMEOUT_MS);
       socket.addEventListener(
         "open",
         () => {

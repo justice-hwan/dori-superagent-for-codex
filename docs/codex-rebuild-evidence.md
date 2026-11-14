@@ -834,6 +834,22 @@ Admission now holds the submit lock across the whole window, review threads use
 it, refused commits are archived, and the duty refresh archives abandoned pending
 records without resuming them.
 
+The reviewer then blocked `3fb9061`: a failing recovery archive retriggered
+itself through its own record write, and store setup or the first pending save
+could fail outside cleanup. `/tmp/dori-recovery-bounds-red.log` showed three
+attempts across three refreshes and no archive after either early failure.
+Recovery now attempts each abandoned record once per watcher, and the early
+steps run inside the archive cleanup with the original error kept primary.
+
+The long-standing intermittent idle-watch timeout was traced to its cause.
+Head `724932c` already failed it 5 of 400 runs, and failing traces show no
+filesystem event for the new record at all. A scratch probe showed that a fresh
+macOS directory watcher missed 27 of 1000 writes made immediately after it
+started, but 0 of 929 once a first event had arrived. The idle watch now confirms
+both watchers live with a bounded sentinel handshake before its initial refresh,
+and fails closed if either stays silent. A test watcher that starts no real
+watch until marked live reproduces the miss deterministically.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

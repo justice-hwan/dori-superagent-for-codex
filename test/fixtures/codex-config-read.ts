@@ -18,6 +18,7 @@ export class FixtureConfigRead {
   closeMode: "ok" | "fail" = "ok";
   readonly closes: string[] = [];
   statusObserver: (() => void) | undefined;
+  closeObserver: ((method: string) => void) | undefined;
 
   /** Answers the methods this fake owns; a failing close mode rejects both thread/archive and thread/unsubscribe. */
   handle(
@@ -29,6 +30,7 @@ export class FixtureConfigRead {
     if (method === "mcpServerStatus/list") return this.status(params, started);
     if (method !== "thread/archive" && method !== "thread/unsubscribe") return undefined;
     this.closes.push(method);
+    this.closeObserver?.(method);
     if (this.closeMode === "fail") return { error: `${method} failed` };
     return method === "thread/archive" ? { result: {} } : undefined;
   }

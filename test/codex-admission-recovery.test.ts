@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
 import { takeInboxLock } from "../src/inbox-lock.ts";
 import { CodexConnection, object } from "../src/runtime/codex/protocol.ts";
-import { runReview } from "../src/runtime/codex/review.ts";
+import { admitThread, runReview } from "../src/runtime/codex/review.ts";
 import { CodexStore, type RecordEntry } from "../src/runtime/codex/store.ts";
 import { fixture } from "./codex-fixture.test.ts";
 
@@ -16,7 +16,7 @@ const setup = async () => {
   writeFileSync(join(codexHome, "config.toml"), '[mcp_servers.user_reader]\ncommand = "/usr/bin/true"\n');
   const home = mkdtempSync(join(homedir(), ".dori-admission-recovery-"));
   onTestFinished(() => rmSync(home, { recursive: true, force: true }));
-  const env = { ...f.env, CODEX_HOME: codexHome, DORI_CODEX_WORKSPACE: f.spec.cwd, DORI_CODEX_REVIEW_TIMEOUT_MS: "20" };
+  const env = { ...f.env, CODEX_HOME: codexHome, DORI_CODEX_WORKSPACE: f.spec.cwd };
   const managed = {
     ...env,
     DORI_HOME: home,
@@ -139,4 +139,36 @@ test("no other operation can take the thread submit lock during the admission wi
   const pending = records(home).map((path) => object(JSON.parse(readFileSync(path, "utf8")))["admission"]);
   console.info("ADMISSION_COMMIT_LOCKED", { outcome, lockHeld, pending });
   expect({ outcome, lockHeld, pending }).toEqual({ outcome: "admitted", lockHeld: false, pending: [undefined] });
+});
+
+class FirstSaveFails extends CodexStore {
+  override async save(entry: RecordEntry): Promise<void> {
+    if (entry.admission === "pending") throw new Error("disk full");
+    await super.save(entry);
+  }
+}
+class InitFails extends CodexStore {
+  override async init(): Promise<void> {
+    throw new Error("no sessions directory");
+  }
+}
+
+test.each(["save", "init"] as const)("a %s failure after thread/start still archives the thread", async (step) => {
+  const { f } = await setup();
+  const connection = new CodexConnection(f.env.DORI_CODEX_SOCKET);
+  f.cleanup.push(() => connection.disconnect());
+  const store = step === "save" ? new FirstSaveFails(f.root) : new InitFails(f.root);
+  const archives = f.config.closes.length;
+  const pending: RecordEntry = { id: crypto.randomUUID(), spec: f.spec, closed: false, admission: "pending" };
+
+  const message = await admitThread(connection, store, pending, new Set(), 20).then(
+    () => "admitted",
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+
+  console.info("INITIAL_PERSISTENCE_FAILURE", { step, message, closes: f.config.closes.slice(archives) });
+  expect({ message, closes: f.config.closes.slice(archives) }).toEqual({
+    message: step === "save" ? "disk full" : "no sessions directory",
+    closes: ["thread/archive"],
+  });
 });
