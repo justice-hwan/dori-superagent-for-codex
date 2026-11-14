@@ -146,18 +146,27 @@ not a benchmark or a speedup claim.
 
 ## Required checks
 
-The latest runtime-loader corrective tree completed `bun run --bun ci` with
-exit 0 using genuine standalone **Bun 1.4.4** and the injected operator home
-and runtime variables unset:
+The latest follow-up corrective tree passed every required local stage using
+genuine standalone **Bun 1.4.4** with injected operator home and runtime variables
+unset. The initial full pipeline and the failed-stage rerun remain distinct:
 
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 255 files passed.
-- Harness tests: **547 passed, 0 failed** across 64 files.
+- Source-size gate: 257 files passed.
+- Harness tests: **555 passed, 0 failed** across 65 files with seed `1794622`.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
-The complete passing run is `/tmp/dori-vm-loader-final-ci.log`.
+The initial full run, `/tmp/dori-followup-full-ci.log`, passed static gates and
+554 harness cases but timed out in the existing idle-watch discovery/inbox case
+at the unchanged 15-second limit. That case passed separately on both unchanged
+`a35cd00` and the corrected source. Its cause remains unproven. Only the failed
+harness stage was repeated with an explicit diagnostic order; it exited 0 in
+`/tmp/dori-followup-harness-ordered.log`. The unrun messenger stage separately
+exited 0 in `/tmp/dori-followup-messenger.log`. The timeout is retained as a
+watcher reliability residual, not claimed fixed by the follow-up correction.
+The preceding runtime-loader full passing run is
+`/tmp/dori-vm-loader-final-ci.log`.
 The preceding lifecycle correction is recorded separately in
 `/tmp/dori-lock-worker-full-ci.log`.
 The preceding exception-boundary correction is recorded separately in
@@ -171,7 +180,7 @@ runtime-selection tests to fail. Only that stage was repeated with those
 variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
 392/0 result. No passed stage was repeated and no legacy test was changed.
 Earlier isolated runs skipped eight external hc/herdr cases because those
-binaries were absent from their test PATH; the latest run reports all 547
+binaries were absent from their test PATH; the latest run reports all 555
 harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -438,6 +447,41 @@ admitted-thread callback and constructs the expected CLI metadata using
 Installed-MCP plain-error controls preserve Error identity and diagnostics.
 No new native/model, UI/timing, historical adapter, authentication or publishing
 run was used for this correction.
+
+## Follow-up admission and closure correction
+
+Formal review of `a35cd00` returned BLOCK despite independent approval and four
+successful remote CI jobs. Production delivery left old READY evidence intact,
+and closure could strand instructions queued while a lane was busy.
+
+The pre-fix production/wire regression run in `/tmp/dori-followup-red.log`
+recorded three failures: delivered follow-up closed without fresh READY,
+busy-to-idle closure with pending work, and a send admitted during an actual
+close barrier. Two recovery controls passed on that base.
+
+Lane instruction enqueue, READY and closure now share the existing inbox lock.
+Closure merges forwarded inbox work and refuses pending entries while holding
+the lock through native close and durable completion. Closed lane targets refuse
+new instructions. Role inbox appends and the short queue storage transaction
+remain unchanged.
+
+Successful admission clears prior READY/final evidence and durably records the
+batch identity before queue settlement. READY reconciles a confirmed native
+admission before writing fresh evidence. Replaying that receipt then preserves
+the newer READY. Stable lane message identities also distinguish repeated
+instructions with identical text and timestamps.
+
+Eight regression cases cover admission-save, settlement and acknowledgement
+failure; actual sender exit before/after settlement; pending busy-to-idle work;
+stale completion; and the actual close/admission race. Removing the durable
+identity guard caused all five fresh-READY recovery cases to fail in
+`/tmp/dori-followup-identity-mutation.log`; the exact guard was restored.
+All eight passed in the complete 555-case harness run.
+
+No native/model acceptance was repeated. The accepted lifecycle evidence stays
+bound to `4cfb61f`; this correction's source and local regressions must be
+inspected before the administrator scopes any affected-flow acceptance.
+The prior desktop, timing and adapter evidence retains its original scope.
 
 ## Autonomous lead acceptance
 

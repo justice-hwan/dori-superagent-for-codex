@@ -3,7 +3,8 @@ import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { resolveTarget } from "./target.ts";
 import { refText } from "./refs.ts";
-import { confirmJob, reserveJob } from "./runtime/codex/bridge-jobs.ts";
+import { admitLane, admitMessages, enqueueInstructions } from "./lane-admission.ts";
+import { confirmJob } from "./runtime/codex/bridge-jobs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
 import { migrating } from "./store-journal.ts";
 import type { DeliveryAttempt, QueuedMessage } from "./store-types.ts";
@@ -29,9 +30,9 @@ export async function sendOrThrow(
   text: string,
   from: string,
 ): Promise<"DELIVERED" | "QUEUED"> {
-  const ref = resolveTarget(d, target);
-  reserveJob(d.store, ref, text);
-  d.store.enqueue(ref, { at: d.now(), from, text });
+  const named = resolveTarget(d, target);
+  const ref = d.store.forwardOf(named) ?? named;
+  enqueueInstructions(d, ref, { at: d.now(), from, text });
   return (await flushInbox(d, ref)) === "delivered" ? "DELIVERED" : "QUEUED";
 }
 
@@ -84,6 +85,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const rt = d.runtimes.for(ref);
   const confirmed = await rt.confirmedDelivery?.(ref);
   if (confirmed) {
+    admitLane(d, ref, confirmed.id);
     settleInbox(
       d,
       ref,
@@ -93,7 +95,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   }
   let all = d.store.queued(ref);
   if (all.length === 0) return "delivered";
-  if (rt.kind === "codex" && all.some((message) => !message.deliveryId)) {
+  if ((rt.kind === "codex" || d.store.laneBySession(ref)) && all.some((message) => !message.deliveryId)) {
     all = d.store.updateInbox(ref, (current) =>
       current.map((message) => ({ ...message, deliveryId: message.deliveryId ?? crypto.randomUUID() })),
     );
@@ -130,6 +132,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
       await holdTyped(d, ref, typed, "a different agent is in the pane than the one the text was typed into");
       return typed.length === queued.length ? "held" : "queued";
     }
+    admitMessages(d, ref, typed);
     settleInbox(d, ref, typed);
     // Messages queued after the typed batch were not delivered by this Enter; they wait for the next pass.
     return typed.length === queued.length ? "delivered" : "queued";
@@ -156,6 +159,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const out = await rt.deliver(ref, body, batch ? { batch } : undefined);
   switch (out.kind) {
     case "delivered":
+      admitMessages(d, ref, queued);
       settleInbox(d, ref, queued);
       if (batch) await rt.acknowledgeDelivery?.(ref, batch.id);
       return "delivered";

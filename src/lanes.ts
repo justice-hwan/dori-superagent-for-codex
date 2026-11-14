@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
+import { admitLane } from "./lane-admission.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
 import { refText } from "./refs.ts";
@@ -112,13 +113,23 @@ export async function ready(
 ): Promise<SendResult | undefined> {
   if (evidence.length === 0) throw new Refusal("READY needs at least one --evidence link (a PR, a receipt, a file)");
   if (!text.trim()) throw new Refusal("READY needs the final answer text");
-  const lane = openLane(d, key);
   const now = d.now();
-  lane.status = "ready";
-  lane.final = { text, evidence: [...evidence], at: now };
-  lane.lastActivityAt = now;
-  lane.log.push({ at: now, kind: "ready", text });
-  d.store.saveLane(lane);
+  const initial = openLane(d, key);
+  const release = d.store.lockInbox(initial.sessionRef, now);
+  if (!release) throw new Refusal(`lane ${key} inbox is busy; try again`);
+  let lane: Lane;
+  try {
+    const confirmed = await d.runtimes.for(initial.sessionRef).confirmedDelivery?.(initial.sessionRef);
+    if (confirmed) admitLane(d, initial.sessionRef, confirmed.id);
+    lane = openLane(d, key);
+    lane.status = "ready";
+    lane.final = { text, evidence: [...evidence], at: now };
+    lane.lastActivityAt = now;
+    lane.log.push({ at: now, kind: "ready", text });
+    d.store.saveLane(lane);
+  } finally {
+    release();
+  }
   const sent = await settled(tellLead(d, `[READY ${key}] ${text}\nevidence: ${evidence.join(" ")}`, key));
   void runHook(d, "onReady", { key, text, evidence: evidence.join(" ") });
   d.usage.record({
@@ -130,15 +141,28 @@ export async function ready(
 }
 
 export async function done(d: Deps, key: string): Promise<void> {
-  const lane = d.store.lane(key);
-  if (!lane) throw new Refusal(`no lane ${key}`);
-  if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
-  const rt = d.runtimes.for(lane.sessionRef);
-  const { status: st } = await rt.probe(lane.sessionRef);
-  if (st === "working" || st === "blocked" || st === "error")
-    throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
-  if (st !== "gone") await rt.close(lane.sessionRef);
-  lane.status = "done";
-  lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
-  d.store.saveLane(lane);
+  const initial = d.store.lane(key);
+  if (!initial) throw new Refusal(`no lane ${key}`);
+  const release = d.store.lockInbox(initial.sessionRef, d.now());
+  if (!release) throw new Refusal(`lane ${key} inbox is busy; try again`);
+  try {
+    const rt = d.runtimes.for(initial.sessionRef);
+    const confirmed = await rt.confirmedDelivery?.(initial.sessionRef);
+    if (confirmed) admitLane(d, initial.sessionRef, confirmed.id);
+    const lane = openLane(d, key);
+    if (lane.status !== "ready")
+      throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+    d.store.mergeForwarded(lane.sessionRef);
+    if (d.store.queued(lane.sessionRef).length)
+      throw new Refusal(`lane ${key} inbox has pending work; deliver it before closing`);
+    const { status: st } = await rt.probe(lane.sessionRef);
+    if (st === "working" || st === "blocked" || st === "error")
+      throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
+    if (st !== "gone") await rt.close(lane.sessionRef);
+    lane.status = "done";
+    lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
+    d.store.saveLane(lane);
+  } finally {
+    release();
+  }
 }

@@ -61,6 +61,14 @@ could be writable by a sandboxed lane. Operator CLI lifecycle hooks retain their
 existing behavior; the typed outcome adapter is the supported host notification
 boundary for a managed lead.
 
+An admitted follow-up invalidates the lane's previous READY and final evidence.
+The lane must issue a fresh READY for that work. Queued instructions remain
+pending until admission, and `done` refuses closure while any inbox work remains.
+Lane sends, READY and closure share the inbox lock; a concurrent operation can
+return a busy refusal before accepting new work. Native batch identities survive
+sender exit and acknowledgement recovery so replaying a receipt preserves a
+newer READY.
+
 ## Desktop behavior
 
 Use the same managed daemon and Codex home as the desktop connection.

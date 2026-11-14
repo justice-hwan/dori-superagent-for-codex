@@ -22,6 +22,8 @@ export type Lane = {
   createdAt: number;
   lastActivityAt: number;
   nudges: number;
+  /** Last admitted inbox batch; repeated settlement must not invalidate a later READY. */
+  admissionId?: string;
   final?: { text: string; evidence: string[]; at: number };
   log: { at: number; kind: "start" | "report" | "ready" | "nudge" | "done" | "lost"; text: string }[];
 };
