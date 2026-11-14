@@ -97,7 +97,16 @@ ordinary operation, including delivery, handoff, acknowledgement and the
 management bridge, refuses a pending thread, while closing it archives it.
 Admission commits under the thread's submit lock only if the record is still
 pending and open, so a record that recovery changed in between is never
-overwritten. A pending record left by a crash is therefore never delivered into. A failed, malformed
+overwritten. Review threads follow the same lifecycle. The admitting process
+holds the thread's submit lock from the pending save until it commits or refuses,
+and any refusal, including a refused commit, archives the thread. A pending
+thread is never resumed: probe reports it as unknown, and the duty worker's idle
+watch skips it. That watch archives a pending record whose submit lock it can
+take, meaning its admitter is gone, and leaves one whose lock is still held. The
+lock trusts its SQLite reservation, so a reused process ID in leftover metadata
+cannot keep a dead admitter's record alive. A pending record left by a crash is
+therefore archived when the duty worker next starts or sees a record change, and
+is never delivered into. A failed, malformed
 or late read does the same, bounded by `DORI_CODEX_REVIEW_TIMEOUT_MS`. A server
 added between the two reads is still spawned when the thread starts, because
 Codex brings MCP servers up at `thread/start`; only an operator

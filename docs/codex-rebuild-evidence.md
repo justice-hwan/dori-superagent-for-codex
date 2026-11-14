@@ -825,6 +825,15 @@ being overwritten. The refusal now always survives with every secondary failure
 attached, managed threads carry a pending-admission state until a locked commit,
 and the runtime-pin test waits for the hourly tick to release its loop lock.
 
+The reviewer then blocked `cef8e0f`: the idle watch and probe still resumed
+pending threads, and review threads lacked the pending lifecycle.
+`/tmp/dori-pending-readers-red.log` and `/tmp/dori-pending-recovery-red.log`
+showed both resumes, a review crash record accepting a delivery, a refused
+commit left unarchived, and a crash-left record left open by the duty refresh.
+Admission now holds the submit lock across the whole window, review threads use
+it, refused commits are archived, and the duty refresh archives abandoned pending
+records without resuming them.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

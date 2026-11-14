@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { SessionRef } from "../types.ts";
 import { CodexError, object, type CodexConnection, type Notification } from "./protocol.ts";
 import { reference, type CodexStore } from "./store.ts";
+import { archiveAbandonedAdmission } from "./review.ts";
 import { isMissingThreadError } from "./threads.ts";
 
 /** Each thread has its own pending callback; one slow lane never holds up another. */
@@ -38,6 +39,11 @@ export const watchIdle = async (
         .filter((entry) => !entry.id.startsWith("worker-"))
         .map(async (entry) => {
           if (stopped || subscribed.has(entry.id)) return;
+          if (entry.admission === "pending") {
+            const failure = await archiveAbandonedAdmission(connection, store, entry.id);
+            if (failure) report(failure);
+            return;
+          }
           subscribed.add(entry.id);
           try {
             const response = object(await connection.call("thread/resume", { threadId: entry.id, excludeTurns: true }));

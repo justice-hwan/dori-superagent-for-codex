@@ -21,7 +21,7 @@ import { NativeStartUncertain } from "../types.ts";
 import { disabledConfiguredMcpServers, pinHostRuntime, prepareBridge, trustedPath } from "./bridge-install.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
-import { admitManagedThread, runReview } from "./review.ts";
+import { admitThread, runReview } from "./review.ts";
 import { CodexStore, reference, type RecordEntry } from "./store.ts";
 import { defaultCommand, probeThread, readThread, startParams, type Environment } from "./threads.ts";
 import { watchIdle } from "./watch.ts";
@@ -83,10 +83,10 @@ export class CodexRuntime implements SessionRuntime {
         };
       response = worker ? undefined : object(await this.connection.call("thread/start", { ...params, config }));
       if (bridge && response)
-        admitted = await admitManagedThread(
+        admitted = await admitThread(
           this.connection,
           this.store,
-          { ...spec, id: text(object(response["thread"])["id"]) },
+          { id: text(object(response["thread"])["id"]), spec, closed: false, admission: "pending" },
           new Set(Object.keys(object(config["mcp_servers"]))),
           Number(this.env["DORI_CODEX_REVIEW_TIMEOUT_MS"] || 120_000),
         );
@@ -151,6 +151,7 @@ export class CodexRuntime implements SessionRuntime {
   async probe(ref: SessionRef): Promise<Probe> {
     const entry = await this.store.owned(ref, true);
     if (entry.closed) return { status: "gone", shellInFront: false };
+    if (entry.admission === "pending") return { status: "unknown", shellInFront: false };
     return ref.id.startsWith("worker-") ? probeWorker(entry) : probeThread(this.connection, ref.id);
   }
 

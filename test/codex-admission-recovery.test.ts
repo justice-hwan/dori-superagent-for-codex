@@ -121,7 +121,7 @@ test("committing admission never overwrites a record recovery changed in between
   expect({ outcome, closed }).toEqual({ outcome: "refused", closed: [true] });
 });
 
-test("admission does not commit while another operation holds the thread", async () => {
+test("no other operation can take the thread submit lock during the admission window", async () => {
   const { f, home, managed } = await setup();
   let held: (() => void) | undefined;
   f.config.statusObserver = () => {
@@ -138,5 +138,5 @@ test("admission does not commit while another operation holds the thread", async
 
   const pending = records(home).map((path) => object(JSON.parse(readFileSync(path, "utf8")))["admission"]);
   console.info("ADMISSION_COMMIT_LOCKED", { outcome, lockHeld, pending });
-  expect({ outcome, lockHeld, pending }).toEqual({ outcome: "refused", lockHeld: true, pending: ["pending"] });
+  expect({ outcome, lockHeld, pending }).toEqual({ outcome: "admitted", lockHeld: false, pending: [undefined] });
 });

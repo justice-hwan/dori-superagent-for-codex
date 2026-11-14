@@ -44,42 +44,66 @@ export const refuseAdmittedThread = async (
   throw primary;
 };
 
-/** Clears pending admission under the thread's submit lock, refusing if recovery changed the record meanwhile. */
-export const commitAdmittedThread = async (store: CodexStore, entry: RecordEntry): Promise<RecordEntry> => {
-  const release = takeInboxLock(`${store.path(entry.id)}.submit-lock`, Date.now());
-  if (!release) throw new CodexError("uncertain", "Admission cannot commit while another operation holds the thread");
+const admissionLock = (store: CodexStore, id: string) =>
+  takeInboxLock(`${store.path(id)}.submit-lock`, Date.now(), { reservationAuthoritative: true });
+
+/**
+ * Admits a fresh thread while holding its submit lock for the whole window: the pending record is saved, the MCP
+ * check runs (bounded by `milliseconds`), and admission commits only if the record is still pending and open. Any
+ * refusal, including a refused commit, archives the thread with the refusal kept primary. A pending record whose lock
+ * can be taken therefore belongs to an admitter that is gone. The lock trusts its SQLite reservation, so leftover
+ * metadata naming a reused process ID cannot make a dead admitter look alive.
+ */
+export const admitThread = async (
+  connection: CodexConnection,
+  store: CodexStore,
+  pending: RecordEntry,
+  allowed: ReadonlySet<string>,
+  milliseconds: number,
+): Promise<RecordEntry> => {
+  await store.init();
+  const release = admissionLock(store, pending.id);
+  if (!release) throw new CodexError("uncertain", "Admission could not reserve the new thread");
   try {
-    const current = await store.owned({ runtime: "codex", id: entry.id }, true);
-    if (current.closed || current.admission !== "pending")
-      throw new CodexError("ownership", "Thread record changed before admission was committed");
-    const { admission: _admission, ...admitted } = current;
-    await store.save(admitted);
-    return admitted;
+    await store.save(pending);
+    try {
+      await assertAdmittedMcpServers(connection, pending.spec.cwd, pending.id, allowed, milliseconds);
+      const current = await store.owned({ runtime: "codex", id: pending.id }, true);
+      if (current.closed || current.admission !== "pending")
+        throw new CodexError("ownership", "Thread record changed before admission was committed");
+      const { admission: _admission, ...admitted } = current;
+      await store.save(admitted);
+      return admitted;
+    } catch (refusal) {
+      const current = await store.owned({ runtime: "codex", id: pending.id }, true).catch(() => pending);
+      return await refuseAdmittedThread(connection, store, current, refusal);
+    }
   } finally {
     release();
   }
 };
 
 /**
- * Records a managed thread as pending before its MCP admission check, then commits admission or refuses the thread.
- * The check reuses the review deadline because thread starts have no deadline of their own.
+ * Archives a pending record whose admitter is gone, never resuming or delivering into it. A record whose admission
+ * lock is still held belongs to a live admitter and is skipped. Returns a cleanup failure for the caller to report.
  */
-export const admitManagedThread = async (
+export const archiveAbandonedAdmission = async (
   connection: CodexConnection,
   store: CodexStore,
-  thread: CreateSpec & { readonly id: string },
-  allowed: ReadonlySet<string>,
-  milliseconds: number,
-): Promise<RecordEntry> => {
-  const { id, ...spec } = thread;
-  const started: RecordEntry = { id, spec, closed: false, admission: "pending" };
-  await store.save(started);
+  id: string,
+): Promise<unknown> => {
+  const release = admissionLock(store, id);
+  if (!release) return undefined;
   try {
-    await assertAdmittedMcpServers(connection, spec.cwd, id, allowed, milliseconds);
-  } catch (error) {
-    await refuseAdmittedThread(connection, store, started, error);
+    const current = await store.owned({ runtime: "codex", id }, true);
+    if (current.closed || current.admission !== "pending") return undefined;
+    const abandoned = new CodexError("uncertain", "MCP admission was abandoned before it completed");
+    return await refuseAdmittedThread(connection, store, current, abandoned).catch((error: unknown) =>
+      error instanceof Error && error.cause !== undefined ? error : undefined,
+    );
+  } finally {
+    release();
   }
-  return commitAdmittedThread(store, started);
 };
 
 /** A review owns a fresh read-only thread and only interrupts the turn it started. */
@@ -113,13 +137,8 @@ export const runReview = async (
     }),
   );
   const id = text(object(response["thread"])["id"]);
-  const entry = { id, spec, closed: false };
-  await store.save(entry);
-  try {
-    await assertAdmittedMcpServers(connection, spec.cwd, id, new Set(Object.keys(disabled)), milliseconds);
-  } catch (error) {
-    await refuseAdmittedThread(connection, store, entry, error);
-  }
+  const pending: RecordEntry = { id, spec, closed: false, admission: "pending" };
+  const entry = await admitThread(connection, store, pending, new Set(Object.keys(disabled)), milliseconds);
   const completed = Promise.withResolvers<Record<string, unknown>>();
   let turnId: string | undefined;
   let finished = false;
