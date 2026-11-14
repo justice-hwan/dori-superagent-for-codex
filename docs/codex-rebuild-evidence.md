@@ -858,6 +858,16 @@ before failing readiness. Reconnect refresh now uses the same readiness state;
 the final initial refresh reconciles records and idle inboxes after liveness.
 Removing that gate reproduces both failures.
 
+Formal review of `3aa8540` then blocked an inherited management-name collision:
+partial `mcp_servers.dori` overrides could retain startup settings during recursive
+configuration merging. The formal summary reported 186 passes and one fixture
+failure caused by immutable permissions; its Bun preload demonstration was not
+a full daemon exploit. Fixture-only config-layer regressions show that user,
+project, disabled and profile declarations previously reached `thread/start`.
+Managed startup now refuses the reserved name before starting a thread, rather
+than trying to sanitize individual inherited fields. These regressions execute
+neither inherited commands nor preloads.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

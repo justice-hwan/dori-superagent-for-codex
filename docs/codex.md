@@ -90,7 +90,12 @@ that thread's configuration with `config/read`, giving the exact thread folder
 and requesting every layer. Each MCP server declared in the effective config or
 in any returned layer, including untrusted project layers the app-server leaves
 disabled, is disabled for that thread. If the read fails or returns an
-unexpected shape, the thread is not started. After `thread/start`, Dori reads
+unexpected shape, the thread is not started. For managed bridge threads, `dori`
+is a reserved MCP server name: any existing declaration in effective configuration,
+any returned layer or any profile refuses startup, including disabled entries
+and disabled project layers. This prevents inherited startup fields from merging
+into the trusted bridge configuration; no operator configuration is edited.
+After `thread/start`, Dori reads
 the configuration again and lists the thread's MCP servers with
 `mcpServerStatus/list`; any server the start did not disable, apart from the
 managed `dori` server, refuses the thread before any turn. The thread is

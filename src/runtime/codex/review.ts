@@ -2,7 +2,8 @@ import { takeInboxLock } from "../../inbox-lock.ts";
 import type { CreateSpec } from "../types.ts";
 import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore, RecordEntry } from "./store.ts";
-import { assertAdmittedMcpServers, disabledConfiguredMcpServers } from "./bridge-install.ts";
+import { assertAdmittedMcpServers } from "./bridge-install.ts";
+import { disabledConfiguredMcpServers } from "./mcp-config.ts";
 import { readThread, startParams, type Environment } from "./threads.ts";
 
 type ReviewResult = { readonly stdout: string; readonly code: number; readonly stderr: string };

@@ -18,7 +18,8 @@ import type {
   SubmitResult,
 } from "../types.ts";
 import { NativeStartUncertain } from "../types.ts";
-import { disabledConfiguredMcpServers, pinHostRuntime, prepareBridge, trustedPath } from "./bridge-install.ts";
+import { pinHostRuntime, prepareBridge, trustedPath } from "./bridge-install.ts";
+import { disabledConfiguredMcpServers } from "./mcp-config.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
 import { admitThread, runReview } from "./review.ts";
@@ -78,7 +79,7 @@ export class CodexRuntime implements SessionRuntime {
       const config: Record<string, unknown> = { ...object(params["config"]), ...bridge?.config };
       if (bridge)
         config["mcp_servers"] = {
-          ...(await disabledConfiguredMcpServers(this.connection, spec.cwd)),
+          ...(await disabledConfiguredMcpServers(this.connection, spec.cwd, "dori")),
           ...object(bridge.config.mcp_servers),
         };
       response = worker ? undefined : object(await this.connection.call("thread/start", { ...params, config }));
