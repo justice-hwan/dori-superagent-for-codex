@@ -63,14 +63,28 @@ export const startWorker = async (
       child.once("spawn", resolve);
       child.once("error", reject);
     });
+    const pid = child.pid;
+    if (!pid) throw new CodexError("unsupported", "Worker did not receive a PID");
+    const current = await identity(pid);
+    if (!current) throw new CodexError("ownership", "Worker identity could not be observed");
+    await store.save({ ...entry, pid, birth: current.slice(0, 24) });
+    child.unref();
+  } catch (error) {
+    if (child.pid && child.exitCode === null && child.signalCode === null) {
+      // The direct child handle proves this newly spawned group, even when
+      // identity lookup or its first durable record failed.
+      const reaped = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch (killError) {
+        if (!(killError instanceof Error && "code" in killError && killError.code === "ESRCH")) throw killError;
+      }
+      await reaped;
+    }
+    throw error;
   } finally {
     closeSync(output);
   }
-  child.unref();
-  const pid = child.pid;
-  if (!pid) throw new CodexError("unsupported", "Worker did not receive a PID");
-  const current = await identity(pid);
-  await store.save({ ...entry, pid, ...(current ? { birth: current.slice(0, 24) } : {}) });
 };
 
 export const probeWorker = async (entry: RecordEntry): Promise<Probe> => ({

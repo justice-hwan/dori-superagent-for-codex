@@ -1,5 +1,6 @@
 import { linkSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
+import { Database, SQLiteError } from "bun:sqlite";
 import { INBOX_LOCK_STALE_MS } from "./store-types.ts";
 
 const readOrUndefined = (path: string): string | undefined => {
@@ -44,35 +45,56 @@ function lockStale(path: string, content: string, now: number): boolean {
 }
 
 export function takeInboxLock(path: string, now: number): (() => void) | undefined {
+  // The OS reservation covers acquisition, reclamation and the holder's
+  // lifetime. Its persistent inode must not be unlinked between contenders.
+  const gate = new Database(`${path}.gate.sqlite`, { create: true });
+  let held = false;
   const mine = JSON.stringify({ pid: process.pid, host: hostname(), at: now });
-  for (let tries = 0; tries < 2; tries++) {
+  try {
     try {
-      writeFileSync(path, mine, { flag: "wx" });
-      return () => {
-        if (readOrUndefined(path) === mine) rmSync(path, { force: true });
-      };
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      gate.exec("PRAGMA busy_timeout=0; BEGIN IMMEDIATE");
+    } catch (error) {
+      if (error instanceof SQLiteError && error.code === "SQLITE_BUSY") return undefined;
+      throw error;
     }
-    const seen = readOrUndefined(path);
-    if (seen === undefined) continue;
-    if (!lockStale(path, seen, now)) return undefined;
-    const aside = `${path}.${process.pid}.stale`;
-    try {
-      renameSync(path, aside);
-    } catch {
-      continue;
-    }
-    if (readOrUndefined(aside) !== seen) {
+    for (let tries = 0; tries < 2; tries++) {
       try {
-        linkSync(aside, path);
+        writeFileSync(path, mine, { flag: "wx" });
+        held = true;
+        return () => {
+          if (!held) return;
+          held = false;
+          try {
+            if (readOrUndefined(path) === mine) rmSync(path, { force: true });
+          } finally {
+            gate.close(true);
+          }
+        };
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+      }
+      const seen = readOrUndefined(path);
+      if (seen === undefined) continue;
+      if (!lockStale(path, seen, now)) return undefined;
+      const aside = `${path}.${process.pid}.stale`;
+      try {
+        renameSync(path, aside);
       } catch {
-        // a third process holds the lock now; either way it is not ours
+        continue;
+      }
+      if (readOrUndefined(aside) !== seen) {
+        try {
+          linkSync(aside, path);
+        } catch {
+          // A legacy writer replaced the path; its ownership is not ours.
+        }
+        rmSync(aside, { force: true });
+        return undefined;
       }
       rmSync(aside, { force: true });
-      return undefined;
     }
-    rmSync(aside, { force: true });
+    return undefined;
+  } finally {
+    if (!held) gate.close(true);
   }
-  return undefined;
 }

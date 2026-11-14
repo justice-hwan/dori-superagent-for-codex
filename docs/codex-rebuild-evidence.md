@@ -154,10 +154,12 @@ and runtime variables unset:
 - Both TypeScript projects: passed.
 - Knip: passed.
 - Source-size gate: 253 files passed.
-- Harness tests: **527 passed, 0 failed** across 63 files.
+- Harness tests: **532 passed, 0 failed** across 63 files.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
-The complete passing run is `/tmp/dori-adapter-exception-final-ci.log`.
+The complete passing run is `/tmp/dori-lock-worker-full-ci.log`.
+The preceding exception-boundary correction is recorded separately in
+`/tmp/dori-adapter-exception-final-ci.log`.
 The preceding runtime-loader correction is recorded separately in
 `/tmp/dori-runtime-loader-verified-ci.log`.
 The earlier `7e8d246` native and static gates are recorded in
@@ -167,7 +169,7 @@ runtime-selection tests to fail. Only that stage was repeated with those
 variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
 392/0 result. No passed stage was repeated and no legacy test was changed.
 Earlier isolated runs skipped eight external hc/herdr cases because those
-binaries were absent from their test PATH; the latest run reports all 527
+binaries were absent from their test PATH; the latest run reports all 532
 harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -359,6 +361,38 @@ tests in `/tmp/dori-adapter-exception-green.log`; the complete final pipeline
 passed 527 harness and 392 messenger tests with zero failures. No native model
 acceptance, historical integration execution, desktop or timing gate was
 repeated for this exception-only boundary correction.
+
+The administrator's formal review subsequently blocked published `368509b` on
+two additional lifecycle defects. A deterministic three-contender filesystem
+interleaving retained two lock owners during stale replacement. Injected worker
+identity and `ENOSPC` failures left a real spawned wrapper alive; the persistence
+case also retained a running descendant. Their meaningful combined baseline is
+`/tmp/dori-formal-lock-worker-confirmed-red.log`. A separate missing-identity
+baseline incorrectly resolved startup and is retained at
+`/tmp/dori-worker-missing-identity-red.log`; the corrected owner was restored
+byte for byte immediately after that bounded mutation.
+
+Lock acquisition, reclamation and holder lifetime now share one nonblocking
+OS-backed SQLite write reservation. The reservation's inode remains persistent;
+only the legacy PID metadata is removed on release. A real child-process
+termination test proves the OS reservation releases for stale-owner recovery.
+All existing live/dead PID, other-host age, release and delivery tests remain.
+
+Worker startup retains its direct child handle until identity and persistence
+succeed. Any post-spawn failure kills only that still-owned process group and
+awaits the wrapper's exit before rethrowing the original failure. A worker
+without observable identity is rejected and cleaned up rather than saved
+without birth identity. Normal scoped worker output, close and refusal to
+signal an unrelated persisted PID remain covered.
+
+Focused combined coverage passed 12 tests in
+`/tmp/dori-formal-lock-worker-green.log`. The complete combined pipeline exited
+0 with 532 harness and 392 messenger passes, both typechecks, Knip and the
+253-file LOC gate. No suppression, skipped test, timeout increase, root
+package/lock change, auth retry or partial-candidate native/model acceptance
+was used. Because these fixes affect storage and worker lifecycle, final-source
+autonomous acceptance must be coordinated after the combined source is frozen;
+the earlier native evidence is not retagged as that still-pending acceptance.
 
 ## Autonomous lead acceptance
 

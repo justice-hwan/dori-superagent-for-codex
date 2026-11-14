@@ -1,4 +1,5 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, onTestFinished, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { existsSync, writeFileSync } from "node:fs";
 import { hostname } from "node:os";
 import { main } from "../src/cli.ts";
@@ -6,6 +7,7 @@ import { dutyTick } from "../src/duty.ts";
 import { send } from "../src/inbox.ts";
 import { flushInbox } from "../src/inbox.ts";
 import { INBOX_LOCK_STALE_MS } from "../src/store-types.ts";
+import { takeInboxLock } from "../src/inbox-lock.ts";
 import { setup } from "./inbox-setup.ts";
 import { href } from "./fake.ts";
 
@@ -13,6 +15,66 @@ import { href } from "./fake.ts";
 
 describe("one flush per pane (#108 3)", () => {
   const lockPath = (s: ReturnType<typeof setup>) => `${s.d.store.inboxPath(href("w1:p2"))}.lock`;
+
+  test("three contenders cannot retain concurrent ownership during stale-lock replacement", () => {
+    const s = setup();
+    const path = lockPath(s);
+    const now = INBOX_LOCK_STALE_MS + 1;
+    writeFileSync(path, JSON.stringify({ pid: 1, host: "other-host", at: 0 }));
+    const rename = fs.renameSync;
+    let interleaving = false;
+    let replacement: (() => void) | undefined;
+    let third: (() => void) | undefined;
+    let first: (() => void) | undefined;
+    const scheduledRename = spyOn(fs, "renameSync").mockImplementation((from, to) => {
+      if (from !== path || interleaving) return rename(from, to);
+      interleaving = true;
+      replacement = takeInboxLock(path, now + 1);
+      rename(from, to);
+      third = takeInboxLock(path, now + 2);
+    });
+    onTestFinished(() => {
+      scheduledRename.mockRestore();
+      first?.();
+      replacement?.();
+      third?.();
+    });
+
+    first = takeInboxLock(path, now);
+
+    expect([first, replacement, third].filter((owner) => owner !== undefined)).toHaveLength(1);
+  });
+
+  test("a terminated process releases its OS reservation for stale-owner recovery", async () => {
+    const s = setup();
+    const path = lockPath(s);
+    const script = `import {takeInboxLock} from ${JSON.stringify(new URL("../src/inbox-lock.ts", import.meta.url).href)};
+const release = takeInboxLock(${JSON.stringify(path)}, ${s.w.clock});
+if (!release) throw new Error("Could not acquire fixture lock");
+console.log("LOCKED");
+await new Response(Bun.stdin).text();
+release();`;
+    const child = Bun.spawn([process.execPath, "-e", script], {
+      env: process.env,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    let recovered: (() => void) | undefined;
+    onTestFinished(async () => {
+      if (child.exitCode === null) child.kill("SIGKILL");
+      await child.exited;
+      recovered?.();
+    });
+    const output = await child.stdout.getReader().read();
+    expect(new TextDecoder().decode(output.value)).toBe("LOCKED\n");
+
+    child.kill("SIGKILL");
+    await child.exited;
+    recovered = takeInboxLock(path, s.w.clock);
+
+    expect(recovered).toBeDefined();
+  });
 
   test("while another flush holds the pane's lock, flushInbox returns queued and delivers nothing", async () => {
     const s = setup();
