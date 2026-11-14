@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
-import { admitLane } from "./lane-admission.ts";
+import { admitHeld, admitLane, identifiedInbox } from "./lane-admission.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
 import { refText } from "./refs.ts";
@@ -121,6 +121,7 @@ export async function ready(
   try {
     const confirmed = await d.runtimes.for(initial.sessionRef).confirmedDelivery?.(initial.sessionRef);
     if (confirmed) admitLane(d, initial.sessionRef, confirmed.id);
+    for (const message of identifiedInbox(d, initial.sessionRef)) admitHeld(d, initial.sessionRef, message);
     lane = openLane(d, key);
     lane.status = "ready";
     lane.final = { text, evidence: [...evidence], at: now };

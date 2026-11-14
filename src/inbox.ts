@@ -3,7 +3,7 @@ import type { Deps } from "./harness.ts";
 import { Refusal } from "./refusal.ts";
 import { resolveTarget } from "./target.ts";
 import { refText } from "./refs.ts";
-import { admitLane, admitMessages, enqueueInstructions } from "./lane-admission.ts";
+import { admitLane, admitMessages, batchIdentity, enqueueInstructions, identifiedInbox } from "./lane-admission.ts";
 import { confirmJob } from "./runtime/codex/bridge-jobs.ts";
 import type { AgentStatus, SessionRef } from "./runtime/types.ts";
 import { migrating } from "./store-journal.ts";
@@ -93,13 +93,8 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
     );
     await rt.acknowledgeDelivery?.(ref, confirmed.id);
   }
-  let all = d.store.queued(ref);
+  const all = identifiedInbox(d, ref);
   if (all.length === 0) return "delivered";
-  if ((rt.kind === "codex" || d.store.laneBySession(ref)) && all.some((message) => !message.deliveryId)) {
-    all = d.store.updateInbox(ref, (current) =>
-      current.map((message) => ({ ...message, deliveryId: message.deliveryId ?? crypto.randomUUID() })),
-    );
-  }
   const queued = all.filter((m) => m.attempt?.state !== "ambiguous");
   // The probe carries the #62 screen check on herdr: an omo with live monitors between turns reads idle.
   const { status } = await rt.probe(ref);
@@ -152,7 +147,7 @@ async function flushLocked(d: Deps, ref: SessionRef): Promise<"delivered" | "que
   const batch =
     rt.kind === "codex"
       ? {
-          id: new Bun.CryptoHasher("sha256").update(JSON.stringify(messageIds)).digest("hex"),
+          id: batchIdentity(queued),
           messageIds,
         }
       : undefined;
@@ -216,6 +211,7 @@ async function recordUncertain(
     at: d.now(),
     state: e.typed ? "typed" : "ambiguous",
     detail,
+    ...(d.store.laneBySession(ref) ? { admission: { id: batchIdentity(batch) } } : {}),
     ...(e.typed ? e.agent : {}),
   });
   if (!e.typed) await noticeHeld(d, ref, batch, `${runtime} said: ${detail}`);
@@ -223,7 +219,12 @@ async function recordUncertain(
 
 /** Typed text whose agent left or changed (#108): it may sit in a lost input, so it is held like an ambiguous batch. */
 async function holdTyped(d: Deps, ref: SessionRef, typed: readonly QueuedMessage[], why: string): Promise<void> {
-  settleInbox(d, ref, typed, { at: d.now(), state: "ambiguous", detail: why });
+  settleInbox(d, ref, typed, {
+    at: d.now(),
+    state: "ambiguous",
+    detail: why,
+    ...(d.store.laneBySession(ref) ? { admission: { id: batchIdentity(typed) } } : {}),
+  });
   await noticeHeld(d, ref, typed, why);
 }
 

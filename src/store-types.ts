@@ -42,6 +42,8 @@ export type DeliveryAttempt = {
   detail?: string;
   agent?: string;
   pgid?: number;
+  /** Original attempted batch and whether its admission has been durably reconciled. */
+  admission?: { readonly id: string; readonly recorded?: true };
 };
 
 /** A flush lock from another host (or an unreadable one) older than this is taken over; on this host only a dead pid frees it (#108). */

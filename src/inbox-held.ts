@@ -5,6 +5,7 @@ import { Refusal } from "./refusal.ts";
 import type { SessionRef } from "./runtime/types.ts";
 import { resolveTarget } from "./target.ts";
 import { confirmJob } from "./runtime/codex/bridge-jobs.ts";
+import { admitHeld, identifiedInbox } from "./lane-admission.ts";
 
 /**
  * `dori send --to-shell`: the operator's per-message opt-in to type this one message into a pane with no agent.
@@ -73,7 +74,7 @@ export async function releaseHeld(d: Deps, target: string, index: number, how: "
   if (!release) throw new Refusal(`the inbox of ${paneId} is being flushed right now; try again`);
   try {
     d.store.mergeForwarded(ref);
-    const msgs = d.store.queued(ref);
+    const msgs = how === "ack" && d.store.laneBySession(ref) ? identifiedInbox(d, ref) : d.store.queued(ref);
     const m = Number.isInteger(index) ? msgs[index - 1] : undefined;
     if (!m)
       throw new Refusal(
@@ -81,6 +82,7 @@ export async function releaseHeld(d: Deps, target: string, index: number, how: "
       );
     if (m.attempt?.state !== "ambiguous")
       throw new Refusal(`entry ${index} of ${paneId} is not held; only held entries can be acked or resent`);
+    if (how === "ack") admitHeld(d, ref, m);
     await d.runtimes.for(ref).resolveDelivery?.(ref);
     d.store.updateInbox(ref, (current) => {
       const selected = current.findIndex((entry, i) =>

@@ -69,6 +69,12 @@ return a busy refusal before accepting new work. Native batch identities survive
 sender exit and acknowledgement recovery so replaying a receipt preserves a
 newer READY.
 
+For an ambiguous follow-up, operator `inbox ack` records admission before
+clearing uncertainty or removing the selected entry. A fresh READY reconciles
+the held batch first, so later acknowledgements of its remaining entries retain
+that completion. Held entries still require explicit operator recovery.
+`resend` preserves message identity and needs fresh READY after actual delivery.
+
 ## Desktop behavior
 
 Use the same managed daemon and Codex home as the desktop connection.

@@ -2,29 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { flushInbox, send } from "../src/inbox.ts";
 import { done, ready } from "../src/lanes.ts";
-import { harnessFixture } from "./codex-fixture.test.ts";
-
-async function readyLane() {
-  const { f, d } = await harnessFixture();
-  const ref = await f.rt.create(f.spec);
-  const lead = await f.rt.create({ ...f.spec, role: "lead", name: "lead" });
-  d.store.setRole("lead", lead);
-  d.store.saveLane({
-    key: "followup",
-    sessionRef: ref,
-    paneId: ref.id,
-    tabId: "",
-    brief: "",
-    cwd: f.spec.cwd,
-    status: "working",
-    createdAt: d.now(),
-    lastActivityAt: d.now(),
-    nudges: 0,
-    log: [],
-  });
-  await ready(d, "followup", "initial result", ["initial.json"]);
-  return { f, d, ref };
-}
+import { readyLane } from "./fixtures/ready-lane.ts";
 
 test("delivered followup requires fresh READY before closure", async () => {
   const { f, d, ref } = await readyLane();

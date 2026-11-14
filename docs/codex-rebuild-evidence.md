@@ -146,18 +146,25 @@ not a benchmark or a speedup claim.
 
 ## Required checks
 
-The latest follow-up corrective tree passed every required local stage using
-genuine standalone **Bun 1.4.4** with injected operator home and runtime variables
-unset. The initial full pipeline and the failed-stage rerun remain distinct:
+The latest operator-acknowledgement corrective tree completed the full required
+local pipeline with exit 0 using genuine standalone **Bun 1.4.4**, with injected
+operator home and runtime variables unset:
 
 - Biome: no errors; 7 existing warnings and 8 existing informational diagnostics.
 - Both TypeScript projects: passed.
 - Knip: passed.
-- Source-size gate: 257 files passed.
-- Harness tests: **555 passed, 0 failed** across 65 files with seed `1794622`.
+- Source-size gate: 259 files passed.
+- Harness tests: **564 passed, 0 failed** across 66 files.
 - Retained messenger tests: **392 passed, 0 failed** across 54 files.
 
-The initial full run, `/tmp/dori-followup-full-ci.log`, passed static gates and
+The complete passing pipeline is `/tmp/dori-operator-ack-final-ci.log`.
+Its first run, `/tmp/dori-operator-ack-full-ci.log`, passed static gates but
+reported 563 harness passes and one legacy resend failure. The correction had
+eagerly assigned an identity during operator resend. Restricting that migration
+to open-lane acknowledgements fixed the owner; the existing legacy assertion
+was retained unchanged.
+
+The preceding follow-up run, `/tmp/dori-followup-full-ci.log`, passed static gates and
 554 harness cases but timed out in the existing idle-watch discovery/inbox case
 at the unchanged 15-second limit. That case passed separately on both unchanged
 `a35cd00` and the corrected source. Its cause remains unproven. Only the failed
@@ -180,7 +187,7 @@ runtime-selection tests to fail. Only that stage was repeated with those
 variables unset; `/tmp/dori-trust-corrections-messenger-clean-env.log` records its
 392/0 result. No passed stage was repeated and no legacy test was changed.
 Earlier isolated runs skipped eight external hc/herdr cases because those
-binaries were absent from their test PATH; the latest run reports all 555
+binaries were absent from their test PATH; the latest run reports all 564
 harness cases passing. Dedicated CI jobs remain required.
 
 The initial harness-provided Bun launcher reports 1.4.4 but resolves
@@ -478,10 +485,61 @@ identity guard caused all five fresh-READY recovery cases to fail in
 `/tmp/dori-followup-identity-mutation.log`; the exact guard was restored.
 All eight passed in the complete 555-case harness run.
 
-No native/model acceptance was repeated. The accepted lifecycle evidence stays
-bound to `4cfb61f`; this correction's source and local regressions must be
-inspected before the administrator scopes any affected-flow acceptance.
-The prior desktop, timing and adapter evidence retains its original scope.
+The administrator subsequently accepted one bounded normal follow-up flow at
+exact `5add985`, recorded in
+`/tmp/dori-followup-acceptance-5add985-locale.json`. A real native lane published
+initial READY, remained busy at a FIFO barrier, and received queued instructions.
+After idle, the actual MCP close call refused pending work. Admission then
+cleared old completion; the follow-up calculated 17 + 29 = 46 without READY,
+and close refused again. Fresh native READY allowed closure with an empty lane
+queue. Three immutable raw turns retain IDs, exact source/digest, clock origins
+and hashes. Both owned records closed and capability-matched processes exited.
+
+Its original setup attempt failed before any RPC because the process observer
+assumed English timestamps on a Korean-locale host. The original failed receipt
+and run-once guard remain intact. An own-PID observation-only preflight proved
+the cause; the administrator separately released the corrected fixture with
+`LC_ALL=C` only on the `ps` child. Both actual thread configurations retained
+`workspace-write` and `on-request`. That trace proves only the normal follow-up
+flow at `5add985`; older `4cfb61f` lifecycle and desktop/timing/adapter evidence
+retains its original scope.
+
+## Operator acknowledgement correction
+
+The existing reviewer then BLOCKed `5add985` on a source-traced operator path:
+an accepted turn with a lost response becomes held without a confirmed receipt.
+Operator `inbox ack` removed it without admission bookkeeping, allowing stale
+READY to close the lane. A pre-owner production/wire run reproduced current and
+legacy variants: 15 passes and two failures in `/tmp/dori-operator-ack-red.log`.
+
+Held lane entries now retain the identity of the actual attempted batch.
+Acknowledgement records its admission before uncertainty resolution or removal,
+and marks the remaining batch members as reconciled under the existing inbox
+lock and short queue transaction. Fresh READY reconciles that same held batch
+before writing completion, so later selected acknowledgements preserve it.
+Legacy held entries use their selected stable identity without inventing an
+unavailable historical batch. Role recovery and legacy resend identity remain
+unchanged. A newly delivered resend requires fresh completion even when stable
+message identities are retained.
+
+Nine wire regressions cover stale closure, fresh completion, selected old-batch
+acknowledgement alongside a newer confirmed receipt, interrupted queue and
+uncertainty recovery, legacy entries and resend. Closed native receipts still
+reconcile after local closure without a new submission. The existing follow-up,
+legacy held-concurrency and separate-process queue tests remain intact.
+
+The first replay mutation survived and exposed a test gap; it is retained in
+`/tmp/dori-operator-ack-replay-mutation.log`. After strengthening the real
+newer-receipt case, removing replay protection caused one meaningful failure;
+removing READY reconciliation caused two; treating a new resend as receipt replay
+caused one. Every mutation was restored byte for byte before the next.
+The final complete pipeline passed 564 harness and 392 messenger tests.
+
+No native/model acceptance was repeated for this operator path. Its response-loss
+and operator recovery coverage is controlled production/wire evidence. The
+accepted normal native flow remains bound to `5add985`; the administrator owns
+any decision about further live coverage. The earlier watcher timeout remains
+unproven and is not claimed fixed by this correction.
 
 ## Autonomous lead acceptance
 
