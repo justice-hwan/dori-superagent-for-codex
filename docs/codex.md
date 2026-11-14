@@ -46,8 +46,12 @@ periodic pass retained for reconciliation and nudges.
 Loop workers retain the pinned source and Bun executable. Their local environment
 removes executable search roots writable by the task or native temporary tools,
 and startup loader overrides; certificate variables and trusted configuration
-remain. Worker commands validate both their entry directory and canonical target,
-preserving safe configured aliases. The host memory probe uses the system sysctl.
+remain. Worker commands validate their entry directory and canonical target, then
+walk every raw link component of the invocation path in order. A component inside
+a writable root is refused before it is followed, so a mutable relay cannot be
+retargeted between validation and spawn. Safe configured aliases, including
+relative `..` hops, keep their invocation name. The host memory probe uses the
+system sysctl.
 
 A detached worker waits on its private stdin pipe before entering its loop.
 The launcher observes PID/birth identity, commits ownership, then grants startup.

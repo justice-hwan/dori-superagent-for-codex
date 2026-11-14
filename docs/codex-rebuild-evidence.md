@@ -657,6 +657,43 @@ No native/model, production, desktop, timing or accepted lifecycle flow was
 repeated. The actual normal native trace remains scoped to `5add985`; the
 historical watcher cause remains unproven.
 
+## Intermediate executable link correction
+
+The same independent reviewer blocked `cde3dc6`: a protected alias such as
+`protected/bin/gh -> workspace/relay -> protected/libexec/gh` passes canonical
+entry and target checks, yet the original alias is spawned afterwards, so a
+retargeted relay runs writable code. Directory links share the cause.
+
+Before owner edits, `/tmp/dori-worker-traversal-red.log` recorded 1 pass and 9
+failures across the workspace, native temporary directory and `/tmp`, each with
+file, directory-target and parent-directory relays. Every case first ran the
+real safe target and matched its realpath; the existing `Bun.spawn` boundary
+then retargeted the relay synchronously, without sleeps, and each private
+writable marker ran. The safe multi-hop alias control passed.
+
+The correction reuses the existing writable-root policy and walks the raw
+invocation path component by component, refusing a writable component before
+following it. Link targets are not normalized ahead of traversal, so `..` is
+applied to the physical directory a link reached. The worker still spawns the
+validated alias, preserving invocation names. Registration, EOF, environment,
+certificate and cleanup behavior is unchanged.
+
+Added coverage includes a `parent-components` chain whose lexical normalization
+would skip the writable hop, and a protected `relay/../implementation` alias
+that must keep the name `gh`. Five owner mutations each failed at their
+boundary and restored exact owner hashes: removing the component ownership
+check or bypassing the walker ran all twelve writable markers; normalizing link
+targets ran the three parent-component markers and broke the protected parent
+alias; returning the canonical target lost the invocation name; refusing every
+link broke both protected aliases.
+
+The first complete pipeline after correction failed strict typecheck on the new
+test's `Bun.spawn` interceptor; that log is retained. The interceptor now
+types its options from the argv overload and asserts the argv form. The final
+packet binds the passing pipeline and every log hash. No native/model,
+production, desktop, timing or accepted lifecycle flow was repeated. The
+historical watcher cause remains unproven.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

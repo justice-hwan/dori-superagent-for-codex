@@ -1,8 +1,10 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -25,17 +27,45 @@ const within = (child: string, parent: string) => {
     (path !== ".." && !path.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) && !path.startsWith("/"))
   );
 };
+const writableRoots = (cwd: string) => [realpathSync(cwd), realpathSync(tmpdir()), realpathSync("/tmp")];
 /** All executable code and authority state must be outside native tool write roots. */
 export const trustedPath = (path: string, cwd: string): string => {
   if (!isAbsolute(path)) throw new CodexError("ownership", "Bridge paths must be absolute");
   const real = realpathSync(path);
-  const roots = [realpathSync(cwd), realpathSync(tmpdir()), realpathSync("/tmp")];
+  const roots = writableRoots(cwd);
   if (roots.some((root) => within(real, root) || within(root, real)))
     throw new CodexError(
       "ownership",
       "Bridge code, executable and home must be outside agent-writable workspace and temporary roots",
     );
   return real;
+};
+
+/** Preserve an invocation alias only when every traversed component is outside native write roots. */
+export const trustedExecutable = (path: string, cwd: string): string => {
+  trustedPath(dirname(path), cwd);
+  trustedPath(path, cwd);
+  const roots = writableRoots(cwd);
+  const pending = path.split("/");
+  let current = "/";
+  while (pending.length) {
+    const name = pending.shift();
+    if (!name || name === ".") continue;
+    if (name === "..") {
+      current = dirname(current);
+      continue;
+    }
+    const next = join(current, name);
+    if (roots.some((root) => within(next, root)))
+      throw new CodexError("ownership", "Worker executable traverses an agent-writable path");
+    if (lstatSync(next).isSymbolicLink()) {
+      const target = readlinkSync(next);
+      if (isAbsolute(target)) current = "/";
+      // Do not normalize: a link followed by .. must be traversed before its parent.
+      pending.unshift(...target.split("/"));
+    } else current = next;
+  }
+  return path;
 };
 
 function snapshot(base: string): string {

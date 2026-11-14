@@ -6,7 +6,7 @@ import type { Probe } from "../types.ts";
 import { CodexError } from "./protocol.ts";
 import type { Environment } from "./threads.ts";
 import type { CodexStore, RecordEntry } from "./store.ts";
-import { type pinHostRuntime, trustedPath } from "./bridge-install.ts";
+import { type pinHostRuntime, trustedExecutable, trustedPath } from "./bridge-install.ts";
 
 const STARTUP_ENV_KEYS = new Set([
   "ENV",
@@ -24,9 +24,7 @@ export const workerExec =
   async (command, argv, options) => {
     const executable = Bun.which(command);
     if (!executable) throw new CodexError("unsupported", `Worker executable is not installed: ${command}`);
-    trustedPath(dirname(executable), cwd);
-    trustedPath(executable, cwd);
-    return spawnExec(executable, argv, options);
+    return spawnExec(trustedExecutable(executable, cwd), argv, options);
   };
 
 /** Birth time plus an argv marker proves the wrapper even where macOS hides shell environments. */
