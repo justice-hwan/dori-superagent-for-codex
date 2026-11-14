@@ -60,8 +60,16 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
   const observeExecutions = () => {
     if (readdirSync(sessions).filter((name) => name.endsWith(".execution")).length === 2) executions.resolve();
   };
-  const watcher = watch(sessions, observeExecutions);
   const lane = Promise.withResolvers<void>();
+  // The lane is ready when its kickoff delivery releases the submit lock, not when that delivery is admitted.
+  let laneLock: string | undefined;
+  const observeLaneDelivery = () => {
+    if (laneLock && !existsSync(laneLock)) lane.resolve();
+  };
+  const watcher = watch(sessions, () => {
+    observeExecutions();
+    observeLaneDelivery();
+  });
   const escaped = join(authority, "task-code-ran");
   let poisoned = false;
   f.onAdmission((id) => {
@@ -75,7 +83,7 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
           readFileSync(bridge, "utf8"),
       );
     }
-    if (name === "Dori lane: late-lane") lane.resolve();
+    if (name === "Dori lane: late-lane") laneLock = join(sessions, `${id}.json.submit-lock`);
   });
   const env = {
     ...f.env,
