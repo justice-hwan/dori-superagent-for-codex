@@ -766,6 +766,30 @@ well; the user's Codex config is never edited. `dori_start` refuses a key whose
 existing lane belongs to another workspace before writing anything. Same
 workspace reuse, canonical spawn and worker contracts are unchanged.
 
+## Configuration layers and concurrent lane starts
+
+The same reviewer's continuation at `fa3ed3c` completed without a verdict, so
+it provides no coverage. Read-only research then found that the `fa3ed3c`
+override named only servers from the user `config.toml`, while Codex also
+merges system, enterprise, profile and project layers. A project
+`.codex/config.toml` in the reviewed checkout could therefore add a server.
+
+The fake daemon now answers `config/read` from fixture files only. Before owner
+edits, `/tmp/dori-config-layers-race-red-final.log` recorded 0 pass and 7
+failures. Review threads, trusted or untrusted, and a managed lead thread left
+the project server enabled and never read the configuration. A failed or
+malformed read still let both threads start. Two concurrent starts of one new
+key, from one workspace and from a workspace plus the loop path, each started
+two threads.
+
+Managed and review threads now call `config/read` for the exact thread folder
+with every layer and disable each declared server, refusing to start on a
+failed or malformed read. This replaces the user-file read, which in earlier
+tests could have read the developer's own Codex config. Lane starts take a
+per-key lock built on the existing inbox lock, and the workspace ownership check
+runs under it. The legacy `managed_config` layer remains an operator-owned
+residual.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

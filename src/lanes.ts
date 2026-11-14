@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
 import { prompt, type Deps } from "./harness.ts";
@@ -11,16 +11,26 @@ import { groupId } from "./runtime/group.ts";
 import { NativeStartUncertain, openSession } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
 
-export async function startLane(
-  d: Deps,
-  key: string,
-  briefFile: string,
-  opts: { cwd?: string; group?: string } = {},
-): Promise<Lane> {
+type StartOptions = { cwd?: string; group?: string; owner?: string };
+
+export async function startLane(d: Deps, key: string, briefFile: string, opts: StartOptions = {}): Promise<Lane> {
   if (!KEY_RE.test(key)) throw new Refusal(`lane key must match ${KEY_RE}`);
   const reserved = reservedKey(key);
   if (reserved) throw new Refusal(reserved);
+  const release = d.store.lockLane(key, d.now());
+  if (!release) throw new Refusal(`lane ${key} is already being started`);
+  try {
+    return await startUnderLock(d, key, briefFile, opts);
+  } finally {
+    release();
+  }
+}
+
+/** `owner` refuses a key whose existing lane belongs to another workspace, checked under the same lock as the write. */
+async function startUnderLock(d: Deps, key: string, briefFile: string, opts: StartOptions): Promise<Lane> {
   const existing = d.store.lane(key);
+  if (existing && opts.owner !== undefined && (!existsSync(existing.cwd) || realpathSync(existing.cwd) !== opts.owner))
+    throw new Refusal("Lane key belongs to another workspace");
   if (existing && existing.status !== "done" && existing.status !== "lost")
     throw new Refusal(`lane ${key} is already open in ${refText(existing.sessionRef)}`);
   const rt = d.runtimes.default;

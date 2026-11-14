@@ -15,7 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import type { CreateSpec } from "../types.ts";
 import { bridgeTools, type BridgeRole } from "./bridge-schema.ts";
-import { CodexError, object } from "./protocol.ts";
+import { array, type CodexConnection, CodexError, object } from "./protocol.ts";
 import type { Environment } from "./threads.ts";
 import { adapterConfig } from "./bridge-jobs.ts";
 
@@ -132,17 +132,19 @@ export const pinHostRuntime = (cwd: string, env: Environment) => {
 };
 
 /**
- * Managed and review threads expose no unrelated user MCP processes. This is a per-thread override that disables
- * every server the user's Codex config declares; the user's config is never edited.
+ * Managed and review threads expose no MCP server from any Codex config layer. The app-server resolves every layer
+ * for the exact thread cwd, including untrusted project layers it disables, and each declared server is overridden
+ * for this thread only; no config file is edited. A failed read or unexpected shape refuses the thread start.
+ * The legacy managed_config layer outranks thread overrides and remains an operator-owned residual.
  */
-export const disabledUserMcpServers = (env: Environment): Record<string, { enabled: false }> => {
-  const codexConfig = join(env["CODEX_HOME"] || join(env["HOME"] || homedir(), ".codex"), "config.toml");
-  const inherited: Record<string, unknown> = existsSync(codexConfig)
-    ? object(Bun.TOML.parse(readFileSync(codexConfig, "utf8")))
-    : {};
-  return Object.fromEntries(
-    Object.keys(object(inherited["mcp_servers"] ?? {})).map((name) => [name, { enabled: false as const }]),
-  );
+export const disabledConfiguredMcpServers = async (
+  connection: CodexConnection,
+  cwd: string,
+): Promise<Record<string, { enabled: false }>> => {
+  const response = object(await connection.call("config/read", { cwd, includeLayers: true }));
+  const configs = [response["config"], ...array(response["layers"]).map((layer) => object(layer)["config"])];
+  const names = new Set(configs.flatMap((config) => Object.keys(object(object(config)["mcp_servers"] ?? {}))));
+  return Object.fromEntries([...names].map((name) => [name, { enabled: false as const }]));
 };
 
 export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) => {
@@ -163,12 +165,10 @@ export const prepareBridge = (root: string, spec: CreateSpec, env: Environment) 
   writeFileSync(path, JSON.stringify(scope), { mode: 0o600, flag: "wx" });
   const names = bridgeTools(role).map((tool) => tool.name);
   if (role === "lead" && adapterConfig(home)) names.push("dori_job_status", "dori_report_outcome");
-  const disabled = disabledUserMcpServers(env);
   return {
     config: {
       sandbox_workspace_write: { writable_roots: [], exclude_tmpdir_env_var: false, exclude_slash_tmp: false },
       mcp_servers: {
-        ...disabled,
         dori: {
           command: executable,
           args: [join(installed, "src/runtime/codex/bridge-server.ts"), path],

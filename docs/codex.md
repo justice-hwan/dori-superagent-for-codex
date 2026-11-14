@@ -77,10 +77,18 @@ receives only `dori_report` and `dori_ready` for itself. These tools invoke trus
 host lifecycle code with a fixed instance/workspace and role capability.
 Management tool calls receive scoped preauthorization; ordinary tools remain
 `workspace-write` and native approval requests remain with the desktop.
-Unrelated inherited MCP servers are disabled on these managed threads and on
-native review threads. `dori_start` refuses an existing lane key whose
-workspace differs from the caller's, including done and lost lanes, before it
-writes a brief or record; an archived key from the same workspace can be reused.
+Before a managed or native review thread starts, Dori asks the app-server for
+that thread's configuration with `config/read`, giving the exact thread folder
+and requesting every layer. Each MCP server declared in the effective config or
+in any returned layer, including untrusted project layers the app-server leaves
+disabled, is disabled for that thread. If the read fails or returns an
+unexpected shape, the thread is not started. The legacy `managed_config` layer
+outranks per-thread overrides, so servers it declares remain the operator's
+responsibility. `dori_start` refuses an existing lane key whose workspace
+differs from the caller's, including done and lost lanes, before it writes a
+brief or record; an archived key from the same workspace can be reused. Lane
+starts for one key are serialized: a concurrent start of the same key is
+refused rather than racing the ownership check and record write.
 Management reports and READY calls do not run configured lifecycle hooks.
 Those hooks execute unrestricted host commands, whose scripts or dependencies
 could be writable by a sandboxed lane. Operator CLI lifecycle hooks retain their
@@ -194,9 +202,10 @@ Every native launch validates that its authority home is outside writable
 workspace and temporary roots, including workers and launches with the stdio
 bridge unset. Configuration and ownership records must remain protected in
 both modes.
-Native reviews always use a fresh read-only thread with every inherited user MCP
-server disabled, so hostile review content cannot reach preapproved mutating
-tools. Their default deadline is
+Native reviews always use a fresh read-only thread with every configured MCP
+server disabled, so hostile review content, including a project config in the
+reviewed checkout, cannot reach preapproved mutating tools. Their default
+deadline is
 120 seconds, configurable with `DORI_CODEX_REVIEW_TIMEOUT_MS`. Cancellation
 interrupts only the review turn created by that invocation.
 

@@ -1,4 +1,4 @@
-import { existsSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { realpathSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { Deps } from "../../harness.ts";
 import { send } from "../../inbox.ts";
@@ -66,14 +66,11 @@ export const callBridgeTool = async (d: Deps, scope: BridgeScope, name: string, 
     case "dori_start": {
       const args = argumentsOf(input, ["key", "brief"]);
       const key = laneKey(args["key"]);
-      const existing = d.store.lane(key);
-      if (existing && (!existsSync(existing.cwd) || realpathSync(existing.cwd) !== scope.cwd))
-        throw new Refusal("Lane key belongs to another workspace");
       const brief = boundedText(args["brief"]);
       const path = join(scope.root, `bridge-brief-${crypto.randomUUID()}.md`);
       writeFileSync(path, brief, { mode: 0o600, flag: "wx" });
       try {
-        const lane = await startLane(d, key, path, { cwd: scope.cwd });
+        const lane = await startLane(d, key, path, { cwd: scope.cwd, owner: scope.cwd });
         return { key: lane.key, status: lane.status };
       } finally {
         rmSync(path);

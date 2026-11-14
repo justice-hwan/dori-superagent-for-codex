@@ -10,6 +10,7 @@ import type { Deps } from "../src/harness.ts";
 import { Runtimes } from "../src/runtime/registry.ts";
 import { Store } from "../src/store.ts";
 import { World } from "./fake.ts";
+import { FixtureConfigRead } from "./fixtures/codex-config-read.ts";
 
 type Thread = {
   name?: string;
@@ -33,6 +34,7 @@ export const fixture = async () => {
   const cleanup: (() => void | Promise<void>)[] = [];
   let startParams: Record<string, unknown> = {};
   let admission: "accept" | "reject" | "disconnect" | "accept-disconnect" | "malformed" = "accept";
+  const config = new FixtureConfigRead(directory);
   let nameFailure = false;
   const server = Bun.serve<{ initialized: boolean }>({
     port: 0,
@@ -69,6 +71,10 @@ export const fixture = async () => {
           return;
         }
         if (!ws.data.initialized) return reject(-32000, "Not initialized");
+        if (method === "config/read") {
+          const outcome = config.read(params);
+          return "error" in outcome ? reject(-32603, outcome.error) : reply(outcome.result);
+        }
         if (method === "thread/start") {
           startParams = params;
           const id = crypto.randomUUID();
@@ -195,6 +201,7 @@ export const fixture = async () => {
       for (const ws of sockets) ws.close();
     },
     params: () => startParams,
+    config,
     admission: (next: typeof admission) => {
       admission = next;
     },

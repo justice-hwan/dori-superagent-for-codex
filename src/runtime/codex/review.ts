@@ -1,7 +1,7 @@
 import type { CreateSpec } from "../types.ts";
 import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore } from "./store.ts";
-import { disabledUserMcpServers } from "./bridge-install.ts";
+import { disabledConfiguredMcpServers } from "./bridge-install.ts";
 import { readThread, startParams, type Environment } from "./threads.ts";
 
 type ReviewResult = { readonly stdout: string; readonly code: number; readonly stderr: string };
@@ -31,7 +31,7 @@ export const runReview = async (
     await connection.call("thread/start", {
       ...params,
       sandbox: "read-only",
-      config: { ...object(params["config"]), mcp_servers: disabledUserMcpServers(env) },
+      config: { ...object(params["config"]), mcp_servers: await disabledConfiguredMcpServers(connection, spec.cwd) },
       ...(model ? { model } : {}),
     }),
   );

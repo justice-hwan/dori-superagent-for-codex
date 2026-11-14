@@ -151,6 +151,11 @@ export class Store {
     return takeInboxLock(`${this.inboxPath(ref)}.lock`, now);
   }
 
+  /** The same lock, per lane key: one start owns the key's ownership check and record write at a time. */
+  lockLane(key: string, now: number): (() => void) | undefined {
+    return takeInboxLock(join(this.root, "lanes", `${key}.lock`), now);
+  }
+
   /** Sessions with queued messages. */
   inboxPanes(): SessionRef[] {
     return inboxRefs(this.root).filter((r) => this.queued(r).length > 0);
