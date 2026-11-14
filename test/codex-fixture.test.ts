@@ -71,15 +71,9 @@ export const fixture = async () => {
           return;
         }
         if (!ws.data.initialized) return reject(-32000, "Not initialized");
-        if (method === "mcpServerStatus/list") {
-          const outcome = config.status(params, startParams);
-          if (outcome === "hang") return;
-          return "error" in outcome ? reject(-32603, outcome.error) : reply(outcome.result);
-        }
-        if (method === "config/read") {
-          const outcome = config.read(params);
-          return "error" in outcome ? reject(-32603, outcome.error) : reply(outcome.result);
-        }
+        const handled = config.handle(method, params, startParams);
+        if (handled === "hang") return;
+        if (handled) return "error" in handled ? reject(-32603, handled.error) : reply(handled.result);
         if (method === "thread/start") {
           startParams = params;
           const id = crypto.randomUUID();

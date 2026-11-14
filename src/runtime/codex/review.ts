@@ -1,10 +1,33 @@
 import type { CreateSpec } from "../types.ts";
 import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
-import type { CodexStore } from "./store.ts";
+import type { CodexStore, RecordEntry } from "./store.ts";
 import { assertAdmittedMcpServers, disabledConfiguredMcpServers } from "./bridge-install.ts";
 import { readThread, startParams, type Environment } from "./threads.ts";
 
 type ReviewResult = { readonly stdout: string; readonly code: number; readonly stderr: string };
+
+/**
+ * Closes a thread whose MCP admission was refused. thread/archive is the strongest documented close: it shuts the
+ * thread down even while another client is subscribed, but still returns success if that shutdown times out, so MCP
+ * teardown is not confirmed. The refusal stays the thrown error; a failed close becomes its cause and leaves the
+ * owned record uncertain for later recovery, and the record is closed only after the archive succeeds.
+ */
+export const refuseAdmittedThread = async (
+  connection: CodexConnection,
+  store: CodexStore,
+  entry: RecordEntry,
+  refusal: unknown,
+): Promise<never> => {
+  const primary = refusal instanceof Error ? refusal : new CodexError("unsupported", String(refusal));
+  try {
+    await connection.call("thread/archive", { threadId: entry.id });
+  } catch (cleanup) {
+    await store.save({ ...entry, uncertain: "MCP admission was refused but archiving the thread failed" });
+    throw Object.assign(primary, { cause: cleanup });
+  }
+  await store.save({ ...entry, closed: true });
+  throw primary;
+};
 
 /** A review owns a fresh read-only thread and only interrupts the turn it started. */
 export const runReview = async (
@@ -42,9 +65,7 @@ export const runReview = async (
   try {
     await assertAdmittedMcpServers(connection, spec.cwd, id, new Set(Object.keys(disabled)), milliseconds);
   } catch (error) {
-    await connection.call("thread/unsubscribe", { threadId: id });
-    await store.save({ ...entry, closed: true });
-    throw error;
+    await refuseAdmittedThread(connection, store, entry, error);
   }
   const completed = Promise.withResolvers<Record<string, unknown>>();
   let turnId: string | undefined;

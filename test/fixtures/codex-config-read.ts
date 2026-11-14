@@ -15,6 +15,23 @@ export class FixtureConfigRead {
   lateServer: string | undefined;
   readonly reads: Record<string, unknown>[] = [];
   readonly statusReads: Record<string, unknown>[] = [];
+  closeMode: "ok" | "fail" = "ok";
+  readonly closes: string[] = [];
+  statusObserver: (() => void) | undefined;
+
+  /** Answers the methods this fake owns; a failing close mode rejects both thread/archive and thread/unsubscribe. */
+  handle(
+    method: string,
+    params: Record<string, unknown>,
+    started: Record<string, unknown>,
+  ): "hang" | undefined | { readonly error: string } | { readonly result: Record<string, unknown> } {
+    if (method === "config/read") return this.read(params);
+    if (method === "mcpServerStatus/list") return this.status(params, started);
+    if (method !== "thread/archive" && method !== "thread/unsubscribe") return undefined;
+    this.closes.push(method);
+    if (this.closeMode === "fail") return { error: `${method} failed` };
+    return method === "thread/archive" ? { result: {} } : undefined;
+  }
 
   constructor(private readonly directory: string) {}
 
@@ -35,6 +52,7 @@ export class FixtureConfigRead {
     started: Record<string, unknown>,
   ): "hang" | { readonly error: string } | { readonly result: Record<string, unknown> } {
     this.statusReads.push(params);
+    this.statusObserver?.();
     if (this.statusMode === "hang") return "hang";
     if (this.statusMode === "fail") return { error: "MCP status unavailable" };
     if (this.statusMode === "malformed") return { result: { data: "unparseable" } };

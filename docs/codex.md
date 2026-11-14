@@ -85,7 +85,13 @@ disabled, is disabled for that thread. If the read fails or returns an
 unexpected shape, the thread is not started. After `thread/start`, Dori reads
 the configuration again and lists the thread's MCP servers with
 `mcpServerStatus/list`; any server the start did not disable, apart from the
-managed `dori` server, closes the thread before any turn. A failed, malformed
+managed `dori` server, refuses the thread before any turn. The thread is
+recorded before that check, and a refused thread is archived with
+`thread/archive`, the strongest documented close: it shuts the thread down even
+while another client is subscribed, but still reports success if that shutdown
+times out, so MCP process teardown is not confirmed. If archiving fails, the
+refusal is still reported, the failure is attached as its cause, and the record
+stays open and marked uncertain for later recovery. A failed, malformed
 or late read does the same, bounded by `DORI_CODEX_REVIEW_TIMEOUT_MS`. A server
 added between the two reads is still spawned when the thread starts, because
 Codex brings MCP servers up at `thread/start`; only an operator

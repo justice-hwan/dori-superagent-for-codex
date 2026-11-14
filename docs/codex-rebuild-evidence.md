@@ -806,6 +806,16 @@ server appears or a read fails, is malformed or hangs. The lane lock alone
 treats its SQLite reservation as authoritative. A server added in the window is
 still spawned at thread start; an operator MCP allowlist closes that residual.
 
+The same reviewer then blocked `9b0fc74`: a failed `thread/unsubscribe` replaced
+the refusal and could leave a managed thread unrecorded. Codex sources show
+that `thread/unsubscribe` only detaches one client, while `thread/archive`
+shuts the thread down but proceeds after a shutdown timeout.
+`/tmp/dori-refusal-cleanup-red.log` showed both paths reporting the cleanup
+error instead of the refusal and leaving nothing recoverable. Refused threads
+are now recorded first and archived; a failed archive keeps the refusal as the
+error and leaves an uncertain open record. Unconfirmed MCP teardown joins the
+operator allowlist residual.
+
 ## Autonomous lead acceptance
 
 The earlier bounded acceptance below is retained as historical evidence.

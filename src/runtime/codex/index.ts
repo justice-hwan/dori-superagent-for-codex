@@ -27,7 +27,7 @@ import {
 } from "./bridge-install.ts";
 import { CodexConnection, CodexError, object, text } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
-import { runReview } from "./review.ts";
+import { refuseAdmittedThread, runReview } from "./review.ts";
 import { CodexStore, reference } from "./store.ts";
 import { defaultCommand, probeThread, readThread, startParams, type Environment } from "./threads.ts";
 import { watchIdle } from "./watch.ts";
@@ -88,14 +88,14 @@ export class CodexRuntime implements SessionRuntime {
         };
       response = worker ? undefined : object(await this.connection.call("thread/start", { ...params, config }));
       if (bridge && response) {
-        const started = text(object(response["thread"])["id"]);
+        const started = { id: text(object(response["thread"])["id"]), spec, closed: false };
+        await this.store.save(started);
         const allowed = new Set(Object.keys(object(config["mcp_servers"])));
         const deadline = Number(this.env["DORI_CODEX_REVIEW_TIMEOUT_MS"] || 120_000);
         try {
-          await assertAdmittedMcpServers(this.connection, spec.cwd, started, allowed, deadline);
+          await assertAdmittedMcpServers(this.connection, spec.cwd, started.id, allowed, deadline);
         } catch (error) {
-          await this.connection.call("thread/unsubscribe", { threadId: started });
-          throw error;
+          await refuseAdmittedThread(this.connection, this.store, started, error);
         }
       }
     } catch (error) {

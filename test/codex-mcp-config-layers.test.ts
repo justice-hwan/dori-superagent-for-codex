@@ -1,8 +1,9 @@
 import { expect, onTestFinished, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
+import { CodexStore } from "../src/runtime/codex/store.ts";
 import { object } from "../src/runtime/codex/protocol.ts";
 import { fixture } from "./codex-fixture.test.ts";
 
@@ -122,7 +123,20 @@ test("a server added between config/read and thread/start refuses review and man
   const turns = f.calls.filter((call) => call === "turn/start").length;
   console.info("LATE_LAYER_SERVER", { review, managed, turns, statusReads: f.config.statusReads.length });
   expect({ review, managed, turns }).toEqual({ review: "refused", managed: "refused", turns: 0 });
-  expect(f.calls.filter((call) => call === "thread/unsubscribe")).toHaveLength(2);
+  expect(f.config.closes).toEqual(["thread/archive", "thread/archive"]);
+  const stored = async (root: string) => {
+    const store = new CodexStore(root);
+    await store.entries();
+    const directory = dirname(store.path(crypto.randomUUID()));
+    return readdirSync(directory)
+      .filter((name) => name.endsWith(".json"))
+      .map((name) => object(JSON.parse(readFileSync(join(directory, name), "utf8"))))
+      .map((entry) => ({ closed: entry["closed"], uncertain: entry["uncertain"] }));
+  };
+  expect([...(await stored(f.root)), ...(await stored(home))]).toEqual([
+    { closed: true, uncertain: undefined },
+    { closed: true, uncertain: undefined },
+  ]);
 });
 
 test.each(["fail", "malformed", "hang"] as const)(
@@ -143,3 +157,54 @@ test.each(["fail", "malformed", "hang"] as const)(
     expect({ review, managed, turns }).toEqual({ review: "refused", managed: "refused", turns: 0 });
   },
 );
+
+test("a refusal whose close fails keeps the refusal and a recoverable record on review and managed paths", async () => {
+  const { f, env } = await layered();
+  f.config.lateServer = "late_writer";
+  f.config.closeMode = "fail";
+  const home = managedHome();
+  const failure = (run: Promise<unknown>) =>
+    run.then(
+      () => "started",
+      (error: unknown) => (error instanceof Error ? error.message : String(error)),
+    );
+
+  const review = await failure(
+    new CodexRuntime(f.root, { ...env, DORI_CODEX_REVIEW_TIMEOUT_MS: "20" }).runReview("Late"),
+  );
+  f.config.reads.length = 0;
+  const managed = await failure(
+    new CodexRuntime(home, managedEnv(env, home)).create({ ...f.spec, role: "lead", name: "lead" }),
+  );
+
+  const records = [...(await new CodexStore(f.root).entries()), ...(await new CodexStore(home).entries())].map(
+    (entry) => ({ role: entry.spec.role, closed: entry.closed, recoverable: typeof entry.uncertain === "string" }),
+  );
+  console.info("REFUSAL_CLEANUP_FAILURE", { review, managed, records });
+  expect(review).toContain("unexpected MCP servers");
+  expect(managed).toContain("unexpected MCP servers");
+  expect(records).toEqual([
+    { role: "lane", closed: false, recoverable: true },
+    { role: "lead", closed: false, recoverable: true },
+  ]);
+});
+
+test("review and managed threads are recorded before the admission check runs", async () => {
+  const { f, env } = await layered();
+  f.config.lateServer = "late_writer";
+  const home = managedHome();
+  const recorded: number[] = [];
+  let root = f.root;
+  f.config.statusObserver = () => {
+    const directory = dirname(new CodexStore(root).path(crypto.randomUUID()));
+    recorded.push(readdirSync(directory).filter((name) => name.endsWith(".json")).length);
+  };
+
+  await admission(new CodexRuntime(f.root, { ...env, DORI_CODEX_REVIEW_TIMEOUT_MS: "20" }).runReview("Late"));
+  root = home;
+  f.config.reads.length = 0;
+  await admission(new CodexRuntime(home, managedEnv(env, home)).create({ ...f.spec, role: "lead", name: "lead" }));
+
+  console.info("RECORDED_BEFORE_ADMISSION", { recorded });
+  expect(recorded).toEqual([1, 1]);
+});
