@@ -39,7 +39,7 @@ export async function runDuty(d: Deps, a: Args, x: string | undefined): Promise<
     if (rt instanceof CodexRuntime && !one(a, "once")) {
       stopWatching = await rt.watchIdle(async (ref) => {
         if (!d.store.stop("duty")) await flushInbox(d, ref);
-      });
+      }, d);
     }
     for (;;) {
       for (const e of await dutyTick(d))

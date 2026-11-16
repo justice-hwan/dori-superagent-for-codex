@@ -52,7 +52,11 @@ test("CLI handoff holds inbox delivery until idle takeback and duty reconciliati
 
   expect(d.store.queued(lead)).toEqual([]);
   expect(f.threads.get(lead.id)?.items).toEqual([
-    { type: "userMessage", content: [{ type: "text", text: "after desktop", text_elements: [] }] },
+    {
+      type: "userMessage",
+      clientId: expect.any(String),
+      content: [{ type: "text", text: "after desktop", text_elements: [] }],
+    },
   ]);
 });
 
@@ -69,7 +73,11 @@ test("explicit CLI resend resolves native uncertainty under the inbox lock", asy
 
   expect(d.store.queued(ref)).toEqual([]);
   expect(f.threads.get(ref.id)?.items).toEqual([
-    { type: "userMessage", content: [{ type: "text", text: "uncertain task", text_elements: [] }] },
+    {
+      type: "userMessage",
+      clientId: expect.any(String),
+      content: [{ type: "text", text: "uncertain task", text_elements: [] }],
+    },
   ]);
 });
 
@@ -85,6 +93,7 @@ test("startLane creates a native Codex conversation and persists its routable la
   expect(f.threads.get(lane.sessionRef.id)?.items).toEqual([
     {
       type: "userMessage",
+      clientId: expect.any(String),
       content: [
         {
           type: "text",

@@ -39,7 +39,11 @@ export const startParams = (root: string, spec: CreateSpec, env: Environment): R
   approvalPolicy: env["DORI_CODEX_APPROVAL_POLICY"] || "on-request",
   sandbox: env["DORI_CODEX_SANDBOX"] || "workspace-write",
   developerInstructions: instructions(root, spec, env),
-  config: { shell_environment_policy: { inherit: "all", set: toolEnvironment(root, spec, env) } },
+  config: {
+    // Defaults can be overridden per plugin/app; the outer gates disable these registration classes for this thread.
+    features: { plugins: false, apps: false },
+    shell_environment_policy: { inherit: "all", set: toolEnvironment(root, spec, env) },
+  },
 });
 
 export const threadStatus = (value: unknown): AgentStatus => {
@@ -65,12 +69,12 @@ export const isMissingThreadError = (error: unknown): boolean =>
   error.kind === "remote" &&
   /thread.*(?:not found|does not exist)|no thread.*found/i.test(error.message);
 
-export const probeThread = async (connection: CodexConnection, id: string): Promise<Probe> => {
+export const probeThread = async (connection: CodexConnection, id: string, resume = true): Promise<Probe> => {
   let thread: Record<string, unknown>;
   try {
     const response = object(await connection.call("thread/read", { threadId: id, includeTurns: false }));
     thread = object(response["thread"]);
-    if (object(thread["status"])["type"] === "notLoaded") {
+    if (resume && object(thread["status"])["type"] === "notLoaded") {
       const resumed = object(await connection.call("thread/resume", { threadId: id, excludeTurns: true }));
       thread = object(resumed["thread"]);
     }
@@ -92,9 +96,11 @@ export const readThread = async (
   id: string,
   lines: number,
   assistantOnly = false,
+  resume = true,
 ): Promise<string> => {
   if (lines <= 0) return "";
-  if ((await probeThread(connection, id)).status === "gone") throw new CodexError("remote", "Codex thread is gone");
+  if ((await probeThread(connection, id, resume)).status === "gone" && resume)
+    throw new CodexError("remote", "Codex thread is gone");
   const messages: string[] = [];
   let cursor: string | undefined;
   do {

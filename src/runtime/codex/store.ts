@@ -11,6 +11,8 @@ export type RecordEntry = {
   /** Recorded before the MCP admission check; ordinary operations refuse the thread until admission commits. */
   readonly admission?: "pending";
   readonly confirmed?: DeliveryBatch;
+  /** Only newly admitted message-managed threads have controller authority; labels are not host identity. */
+  readonly envelope?: { readonly version: 1; readonly endpoint: string; readonly hostLabel?: string };
   readonly desktopOwned?: boolean;
   readonly pid?: number;
   readonly birth?: string;
@@ -61,6 +63,14 @@ export class CodexStore {
     const parsedContainer = container === "tab" || container === "split-below" ? container : "workspace-root";
     const parsedEnv: Record<string, string> = {};
     for (const [key, value] of Object.entries(env)) parsedEnv[key] = text(value);
+    const envelope = data["envelope"] === undefined ? undefined : object(data["envelope"]);
+    if (
+      envelope &&
+      (envelope["version"] !== 1 ||
+        !text(envelope["endpoint"]).trim() ||
+        (envelope["hostLabel"] !== undefined && !text(envelope["hostLabel"]).trim()))
+    )
+      throw new CodexError("ownership", "Invalid message admission record");
     const entry: RecordEntry = {
       id: ref.id,
       closed: data["closed"],
@@ -73,6 +83,15 @@ export class CodexStore {
         ...(typeof spec["group"] === "string" ? { group: spec["group"] } : {}),
       },
       ...(typeof data["uncertain"] === "string" ? { uncertain: data["uncertain"] } : {}),
+      ...(envelope
+        ? {
+            envelope: {
+              version: 1 as const,
+              endpoint: text(envelope["endpoint"]),
+              ...(envelope["hostLabel"] === undefined ? {} : { hostLabel: text(envelope["hostLabel"]) }),
+            },
+          }
+        : {}),
       ...(data["admission"] === "pending" ? { admission: "pending" as const } : {}),
       ...(data["confirmed"] === undefined
         ? {}
@@ -108,3 +127,9 @@ export const reference = (entry: RecordEntry): SessionRef => ({
   id: entry.id,
   ...(entry.spec.group ? { group: entry.spec.group } : {}),
 });
+
+/** Endpoint authority is host-owned and independent of an optional operator display label. */
+export function assertEndpoint(entry: RecordEntry, address: string): void {
+  if (entry.envelope && entry.envelope.endpoint !== address)
+    throw new CodexError("ownership", "Managed thread belongs to another endpoint");
+}

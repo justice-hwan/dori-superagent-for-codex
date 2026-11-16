@@ -48,7 +48,7 @@ test.each([true, false])("review threads disable user and project MCP servers; p
   expect(listed).toEqual({ user_reader: { enabled: false }, project_writer: { enabled: false } });
 });
 
-test("managed role threads disable user and project MCP servers beside the management server", async () => {
+test("managed role threads disable inherited MCP servers without a management child", async () => {
   const { f, env } = await layered();
   const home = managedHome();
   const rt = new CodexRuntime(home, managedEnv(env, home));
@@ -61,7 +61,7 @@ test("managed role threads disable user and project MCP servers beside the manag
     { cwd: f.spec.cwd, includeLayers: true },
     { cwd: f.spec.cwd, includeLayers: true },
   ]);
-  expect(Object.keys(listed).sort()).toEqual(["dori", "project_writer", "user_reader"]);
+  expect(Object.keys(listed).sort()).toEqual(["project_writer", "user_reader"]);
   expect({ user: listed["user_reader"], project: listed["project_writer"] }).toEqual({
     user: { enabled: false },
     project: { enabled: false },

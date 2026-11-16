@@ -157,6 +157,17 @@ the held batch first, so later acknowledgements of its remaining entries retain
 that completion. Held entries still require explicit operator recovery.
 `resend` preserves message identity and needs fresh READY after actual delivery.
 
+Ordinary inbox messages wait in their queue while a management receipt is queued,
+being submitted, or awaiting canonical response validation. Even an idle daemon
+status does not release that receipt's admission fence. Only the exact claimed
+receipt with its actor, source item, action and result identity may pass it.
+Validation durably acknowledges or continues the receipt before ordinary work
+becomes eligible; a continuation's next receipt keeps the queue waiting.
+Uncertain receipts remain held without replay. This preserves ordering through
+response completion and may delay ordinary messages; no model work holds a
+submission lock or SQL transaction. Batch acceptance and acknowledgement still
+settle the same message identities, retaining messages appended meanwhile.
+
 Message identity and submission identity are separate. Before a new delivery,
 the harness reserves a unique attempt and persists its queue membership under
 the inbox lock. An explicit resend reserves another attempt even when its

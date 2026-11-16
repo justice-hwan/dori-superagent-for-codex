@@ -203,7 +203,10 @@ test("installed stdio server uses an immutable capability to enforce role checks
   const ref = await rt.create({ ...f.spec, role: "lead", name: "lead" });
   const store = new Store(home);
   store.setRole("lead", ref);
-  const server = object(object(object(f.params()["config"])["mcp_servers"])["dori"]);
+  const installed = prepareBridge(home, { ...f.spec, role: "lead", name: "lead" }, env);
+  installed.bind(ref.id);
+  onTestFinished(() => installed.discard());
+  const server = object(object(installed.config.mcp_servers)["dori"]);
   const args = array(server["args"]).map(text);
   const serverEnv = object(server["env"]);
   const environment: Record<string, string | undefined> = { ...process.env };
@@ -244,5 +247,4 @@ test("installed stdio server uses an immutable capability to enforce role checks
   });
   expect(store.lanes()).toEqual([]);
   await rt.close(ref);
-  for (const path of args.slice(1)) rmSync(path);
 });

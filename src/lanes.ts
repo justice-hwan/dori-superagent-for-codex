@@ -1,14 +1,15 @@
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { shq } from "./delivery.ts";
-import { prompt, type Deps } from "./harness.ts";
+import type { Deps } from "./harness.ts";
+import { prompt } from "./prompts.ts";
 import { settled, tellLead, type SendResult } from "./inbox.ts";
 import { admitHeld, admitLane, identifiedInbox, reconcileAdmission } from "./lane-admission.ts";
 import { Refusal } from "./refusal.ts";
 import { runHook } from "./hooks.ts";
 import { refText } from "./refs.ts";
 import { groupId } from "./runtime/group.ts";
-import { NativeStartUncertain, openSession } from "./runtime/types.ts";
+import { NativeStartUncertain, openSession, type SessionRef } from "./runtime/types.ts";
 import { KEY_RE, reservedKey, type Lane } from "./store-types.ts";
 
 type StartOptions = { cwd?: string; group?: string; owner?: string };
@@ -158,24 +159,48 @@ export async function done(d: Deps, key: string): Promise<void> {
   const release = d.store.lockInbox(initial.sessionRef, d.now());
   if (!release) throw new Refusal(`lane ${key} inbox is busy; try again`);
   try {
-    const rt = d.runtimes.for(initial.sessionRef);
-    const confirmed = await rt.confirmedDelivery?.(initial.sessionRef);
-    if (confirmed) admitLane(d, initial.sessionRef, confirmed.id);
-    reconcileAdmission(d, initial.sessionRef);
-    const lane = openLane(d, key);
-    if (lane.status !== "ready")
-      throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
-    d.store.mergeForwarded(lane.sessionRef);
-    if (d.store.queued(lane.sessionRef).length)
-      throw new Refusal(`lane ${key} inbox has pending work; deliver it before closing`);
-    const { status: st } = await rt.probe(lane.sessionRef);
-    if (st === "working" || st === "blocked" || st === "error")
-      throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
-    if (st !== "gone") await rt.close(lane.sessionRef);
-    lane.status = "done";
-    lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
-    d.store.saveLane(lane);
+    await doneLocked(d, key, initial.sessionRef);
   } finally {
     release();
   }
+}
+
+/** Private Codex bridge entry: caller retains the exact target inbox and close capability. */
+export async function doneWithOwnedInbox(
+  d: Deps,
+  key: string,
+  ref: SessionRef,
+  close: () => Promise<void>,
+  validate: (allowClosed?: boolean) => Promise<void>,
+): Promise<void> {
+  await doneLocked(d, key, ref, close, validate);
+}
+
+async function doneLocked(
+  d: Deps,
+  key: string,
+  ref: SessionRef,
+  close?: () => Promise<void>,
+  validate?: (allowClosed?: boolean) => Promise<void>,
+): Promise<void> {
+  await validate?.();
+  const rt = d.runtimes.for(ref);
+  const confirmed = await rt.confirmedDelivery?.(ref);
+  if (confirmed) admitLane(d, ref, confirmed.id);
+  reconcileAdmission(d, ref);
+  const lane = openLane(d, key);
+  if (lane.status !== "ready") throw new Refusal(`lane ${key} is ${lane.status}, not ready: no final answer recorded`);
+  d.store.mergeForwarded(lane.sessionRef);
+  if (d.store.queued(lane.sessionRef).length)
+    throw new Refusal(`lane ${key} inbox has pending work; deliver it before closing`);
+  await validate?.();
+  const { status: st } = await rt.probe(lane.sessionRef);
+  if (st === "working" || st === "blocked" || st === "error")
+    throw new Refusal(`lane ${key} pane is ${st}; let it finish first`);
+  await validate?.();
+  if (st !== "gone") await (close ? close() : rt.close(lane.sessionRef));
+  await validate?.(true);
+  lane.status = "done";
+  lane.log.push({ at: d.now(), kind: "done", text: "closed by lead" });
+  d.store.saveLane(lane);
 }

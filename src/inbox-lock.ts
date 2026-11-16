@@ -51,7 +51,7 @@ function lockStale(path: string, content: string, now: number): boolean {
 export function takeInboxLock(
   path: string,
   now: number,
-  options: { readonly reservationAuthoritative?: boolean } = {},
+  options: { readonly reservationAuthoritative?: boolean; readonly metadataAfterReservation?: boolean } = {},
 ): (() => void) | undefined {
   // The OS reservation covers acquisition, reclamation and the holder's
   // lifetime. Its persistent inode must not be unlinked between contenders.
@@ -72,6 +72,11 @@ export function takeInboxLock(
         return () => {
           if (!held) return;
           held = false;
+          if (options.metadataAfterReservation) {
+            gate.close(true);
+            if (readOrUndefined(path) === mine) rmSync(path, { force: true });
+            return;
+          }
           try {
             if (readOrUndefined(path) === mine) rmSync(path, { force: true });
           } finally {

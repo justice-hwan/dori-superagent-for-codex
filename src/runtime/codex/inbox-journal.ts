@@ -1,4 +1,4 @@
-import { takeInboxLock } from "../../inbox-lock.ts";
+import { takeManagedSubmit } from "./submit-lock.ts";
 import type { DeliveryBatch, SessionRef } from "../types.ts";
 import { CodexError } from "./protocol.ts";
 import type { CodexStore } from "./store.ts";
@@ -8,7 +8,7 @@ export const confirmedDelivery = async (store: CodexStore, ref: SessionRef): Pro
 
 export const acknowledgeDelivery = async (store: CodexStore, ref: SessionRef, batchId: string): Promise<void> => {
   await store.owned(ref, true);
-  const release = takeInboxLock(`${store.path(ref.id)}.submit-lock`, Date.now());
+  const release = takeManagedSubmit(store, ref.id);
   if (!release) throw new CodexError("unsupported", "A submission is still in progress");
   try {
     const entry = await store.owned(ref, true);

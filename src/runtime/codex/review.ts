@@ -1,4 +1,6 @@
-import { takeInboxLock } from "../../inbox-lock.ts";
+import { takeManagedSubmit } from "./submit-lock.ts";
+import { writeFile } from "node:fs/promises";
+import { admissionEvidence } from "./mcp-admission.ts";
 import type { CreateSpec } from "../types.ts";
 import { array, type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore, RecordEntry } from "./store.ts";
@@ -22,6 +24,14 @@ export const refuseAdmittedThread = async (
 ): Promise<never> => {
   const primary = refusal instanceof Error ? refusal : new CodexError("unsupported", String(refusal));
   const failures: unknown[] = [];
+  const diagnostic = admissionEvidence(primary);
+  if (diagnostic) {
+    try {
+      await writeFile(`${store.path(entry.id)}.mcp-admission`, JSON.stringify(diagnostic), { flag: "wx", mode: 0o600 });
+    } catch (persistence) {
+      failures.push(persistence);
+    }
+  }
   let archived = false;
   try {
     await connection.call("thread/archive", { threadId: entry.id });
@@ -46,7 +56,7 @@ export const refuseAdmittedThread = async (
 };
 
 const admissionLock = (store: CodexStore, id: string) =>
-  takeInboxLock(`${store.path(id)}.submit-lock`, Date.now(), { reservationAuthoritative: true });
+  takeManagedSubmit(store, id, { reservationAuthoritative: true });
 
 /**
  * Admits a fresh thread while holding its submit lock for the whole window: the pending record is saved, the MCP

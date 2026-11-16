@@ -11,13 +11,8 @@ import { Runtimes } from "../src/runtime/registry.ts";
 import { Store } from "../src/store.ts";
 import { World } from "./fake.ts";
 import { FixtureConfigRead } from "./fixtures/codex-config-read.ts";
-
-type Thread = {
-  name?: string;
-  status: { type: string; activeFlags?: readonly string[] };
-  items: Record<string, unknown>[];
-  subscribed: Set<ServerWebSocket<{ initialized: boolean }>>;
-};
+import { completeTurn, startTurn, threadView, turnPage } from "./fixtures/codex-history.ts";
+import type { FixtureCompletion, FixtureThread } from "./fixtures/codex-history.ts";
 
 /** Wire fixture models the daemon's independent history and per-client subscriptions. */
 export const fixture = async () => {
@@ -25,9 +20,11 @@ export const fixture = async () => {
   const root = join(directory, "authority");
   const workspace = join(directory, "workspace");
   await Promise.all([mkdir(root), mkdir(workspace)]);
-  const threads = new Map<string, Thread>();
+  const threads = new Map<string, FixtureThread>();
   const sockets = new Set<ServerWebSocket<{ initialized: boolean }>>();
   const calls: string[] = [];
+  const requests: Record<string, unknown>[] = [];
+  const observers: ((request: Record<string, unknown>) => void)[] = [];
   const started = Promise.withResolvers<string>();
   const resumes: ((id: string) => void)[] = [];
   const admissions: ((id: string) => void)[] = [];
@@ -36,6 +33,13 @@ export const fixture = async () => {
   let admission: "accept" | "reject" | "disconnect" | "accept-disconnect" | "malformed" = "accept";
   const config = new FixtureConfigRead(directory);
   let nameFailure = false;
+  let attachFailure = false;
+  let archiveFailure = false;
+  const barrier = (token: string = crypto.randomUUID()) => {
+    for (const ws of sockets)
+      if (ws.data.initialized) ws.send(JSON.stringify({ method: "fixture/barrier", params: { token } }));
+    return token;
+  };
   const server = Bun.serve<{ initialized: boolean }>({
     port: 0,
     hostname: "127.0.0.1",
@@ -55,6 +59,8 @@ export const fixture = async () => {
         const params = object(request["params"]);
         const method = String(request["method"]);
         calls.push(method);
+        requests.push(request);
+        for (const observe of observers) observe(request);
         const reply = (result: unknown) => {
           ws.send(JSON.stringify({ id: request["id"], result }));
         };
@@ -71,18 +77,24 @@ export const fixture = async () => {
           return;
         }
         if (!ws.data.initialized) return reject(-32000, "Not initialized");
+        if (method === "fixture/barrier") return reply({ token: barrier(String(params["token"] ?? request["id"])) });
         const handled = config.handle(method, params, startParams);
         if (handled === "hang") return;
         if (handled) return "error" in handled ? reject(-32603, handled.error) : reply(handled.result);
         if (method === "thread/start") {
           startParams = params;
           const id = crypto.randomUUID();
-          threads.set(id, {
+          const thread: FixtureThread = {
+            id,
+            cwd: typeof params["cwd"] === "string" ? params["cwd"] : workspace,
+            archived: false,
             status: { type: "idle" },
             items: [],
+            turns: [],
             subscribed: new Set([ws]),
-          });
-          return reply({ thread: { id } });
+          };
+          threads.set(id, thread);
+          return reply({ thread: threadView(thread, params) });
         }
         const thread = threads.get(String(params["threadId"]));
         if (!thread) return reject(-32001, "Thread not found");
@@ -92,12 +104,18 @@ export const fixture = async () => {
             thread.name = String(params["name"]);
             return reply({});
           case "thread/read":
-            return reply({ thread: { status: thread.status, cwd: workspace } });
+            return reply({ thread: threadView(thread, params) });
           case "thread/resume":
+            if (attachFailure || thread.archived) return reject(-32602, "Attach rejected");
             thread.subscribed.add(ws);
             if (thread.status.type === "notLoaded") thread.status = { type: "idle" };
             resumes.shift()?.(String(params["threadId"]));
-            return reply({ thread: { status: thread.status } });
+            return reply({ thread: threadView(thread, params) });
+          case "thread/archive":
+            if (archiveFailure) return reject(-32602, "Archive rejected");
+            thread.archived = true;
+            thread.subscribed.clear();
+            return reply({});
           case "thread/unsubscribe":
             thread.subscribed.delete(ws);
             return reply({});
@@ -110,17 +128,8 @@ export const fixture = async () => {
             });
           }
           case "thread/turns/list":
-            return reply({
-              data: [
-                {
-                  id: "turn-1",
-                  items: thread.items,
-                  status: thread.status.type === "active" ? "inProgress" : "completed",
-                },
-              ],
-              nextCursor: null,
-            });
-          case "turn/start":
+            return reply(turnPage(thread, params));
+          case "turn/start": {
             if (admission === "reject") return reject(-32602, "Rejected turn input");
             if (admission === "disconnect") {
               ws.close();
@@ -128,12 +137,7 @@ export const fixture = async () => {
             }
             if (thread.status.type !== "idle") return reject(-32000, "Would steer desktop turn");
             for (const observe of admissions) observe(String(params["threadId"]));
-            thread.status = { type: "active", activeFlags: [] };
-            thread.items.push({
-              type: "userMessage",
-              content: params["input"],
-              ...(typeof params["clientUserMessageId"] === "string" ? { clientId: params["clientUserMessageId"] } : {}),
-            });
+            const turn = startTurn(thread, params);
             if (admission === "accept-disconnect") {
               ws.close();
               return;
@@ -143,19 +147,10 @@ export const fixture = async () => {
               return;
             }
             started.resolve(String(params["threadId"]));
-            return reply({ turn: { id: "turn-1", status: "inProgress" } });
+            return reply({ turn });
+          }
           case "turn/interrupt":
-            thread.status = { type: "idle" };
-            for (const client of thread.subscribed)
-              client.send(
-                JSON.stringify({
-                  method: "turn/completed",
-                  params: {
-                    threadId: params["threadId"],
-                    turn: { id: "turn-1", status: "interrupted" },
-                  },
-                }),
-              );
+            completeTurn(thread, undefined, { status: "interrupted" });
             return reply({});
           default:
             return reject(-32601, "Unsupported method");
@@ -189,6 +184,9 @@ export const fixture = async () => {
     spec,
     threads,
     calls,
+    requests,
+    barrier,
+    onRequest: (observe: (request: Record<string, unknown>) => void) => observers.push(observe),
     cleanup,
     started: started.promise,
     onAdmission: (observe: (id: string) => void) => admissions.push(observe),
@@ -207,21 +205,16 @@ export const fixture = async () => {
     failNaming: () => {
       nameFailure = true;
     },
-    finish(id: string, answer: string) {
+    failAttach: (fail = true) => {
+      attachFailure = fail;
+    },
+    failArchive: (fail = true) => {
+      archiveFailure = fail;
+    },
+    finish(id: string, answer: string, completion?: FixtureCompletion) {
       const thread = threads.get(id);
       if (!thread) throw new Error("Unknown fixture thread");
-      thread.status = { type: "idle" };
-      thread.items.push({ type: "agentMessage", text: answer });
-      for (const ws of thread.subscribed)
-        ws.send(
-          JSON.stringify({
-            method: "turn/completed",
-            params: {
-              threadId: id,
-              turn: { id: "turn-1", status: "completed" },
-            },
-          }),
-        );
+      return completeTurn(thread, answer, completion);
     },
   };
 };

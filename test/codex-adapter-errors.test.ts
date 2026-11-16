@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Deps } from "../src/harness.ts";
 import { send } from "../src/inbox.ts";
+import { prepareBridge } from "../src/runtime/codex/bridge-install.ts";
 import { CodexRuntime } from "../src/runtime/codex/index.ts";
 import { array, object, text } from "../src/runtime/codex/protocol.ts";
 import { Runtimes } from "../src/runtime/registry.ts";
@@ -52,12 +53,6 @@ export const createPersonalTools = async () => ({
 });`,
     );
     writeFileSync(configPath, "{}");
-    writeFileSync(
-      join(f.root, "config.json"),
-      JSON.stringify({
-        codexBridgeAdapter: { module, configPath, instance: "personal" },
-      }),
-    );
     const env = {
       ...f.env,
       DORI_HOME: f.root,
@@ -69,7 +64,16 @@ export const createPersonalTools = async () => ({
     const lead = await rt.create({ ...f.spec, role: "lead", name: "lead" });
     const store = new Store(f.root);
     store.setRole("lead", lead);
-    const server = object(object(object(f.params()["config"])["mcp_servers"])["dori"]);
+    writeFileSync(
+      join(f.root, "config.json"),
+      JSON.stringify({
+        codexBridgeAdapter: { module, configPath, instance: "personal" },
+      }),
+    );
+    const installed = prepareBridge(f.root, { ...f.spec, role: "lead", name: "lead" }, env);
+    installed.bind(lead.id);
+    onTestFinished(() => installed.discard());
+    const server = object(object(installed.config.mcp_servers)["dori"]);
     const job = `job_${"b".repeat(64)}`;
     if (phase === "call") {
       const world = new World();

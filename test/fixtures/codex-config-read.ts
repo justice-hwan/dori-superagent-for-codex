@@ -15,6 +15,13 @@ export class FixtureConfigRead {
   lateServer: string | undefined;
   readonly reads: Record<string, unknown>[] = [];
   readonly statusReads: Record<string, unknown>[] = [];
+  statusPages: readonly (readonly unknown[])[] | undefined;
+  /** Pinned standard plugin activation and host Apps feature gates; unrelated extensions use statusPages. */
+  registrations: {
+    readonly pluginDefault: boolean;
+    readonly plugins: readonly { readonly name: string; readonly id: string; readonly enabled?: boolean }[];
+    readonly hostApps: boolean;
+  } | undefined;
   closeMode: "ok" | "fail" = "ok";
   readonly closes: string[] = [];
   statusObserver: (() => void) | undefined;
@@ -58,6 +65,11 @@ export class FixtureConfigRead {
     if (this.statusMode === "hang") return "hang";
     if (this.statusMode === "fail") return { error: "MCP status unavailable" };
     if (this.statusMode === "malformed") return { result: { data: "unparseable" } };
+    if (this.statusPages) {
+      const index = Number(params["cursor"] ?? 0);
+      return { result: { data: this.statusPages[index] ?? [],
+        nextCursor: index + 1 < this.statusPages.length ? String(index + 1) : null } };
+    }
     const configured = configReadOutcome(this.directory, { cwd: started["cwd"] }, "layers", this.projectTrusted);
     const effective = "result" in configured ? object(object(configured.result["config"])["mcp_servers"] ?? {}) : {};
     const own = object(object(started["config"] ?? {})["mcp_servers"] ?? {});
@@ -66,6 +78,22 @@ export class FixtureConfigRead {
       name,
       runtimeStatus: object(own[name] ?? {})["enabled"] === false ? "disabled" : "connected",
     }));
+    const registrations = this.registrations;
+    if (registrations) {
+      const overrides = object(started["config"] ?? {});
+      const features = object(overrides["features"] ?? {});
+      const plugins = object(overrides["plugins"] ?? {});
+      const fallback = object(plugins["_default"] ?? {})["enabled"] ?? registrations.pluginDefault;
+      if (features["plugins"] !== false) {
+        for (const plugin of registrations.plugins) {
+          const enabled = object(plugins[plugin.id] ?? {})["enabled"] ?? plugin.enabled ?? fallback;
+          if (enabled === true) data.push({ name: plugin.name, runtimeStatus: "connected" });
+        }
+      }
+      // apps._default is tool policy, not the host-owned MCP registration gate.
+      if (registrations.hostApps && features["apps"] !== false)
+        data.push({ name: "codex_apps", runtimeStatus: "connected" });
+    }
     return { result: { data, nextCursor: null } };
   }
 }

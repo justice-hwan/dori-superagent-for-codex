@@ -31,7 +31,7 @@ test.each(["live", "silent"] as const)("reconnect during a %s handshake cannot b
     listener: WatchListener<string>,
   ) => {
     listeners.push(listener);
-    if (listeners.length === 2) watchers.resolve();
+    if (listeners.length === 4) watchers.resolve();
     return {
       close: () => {
         closed++;
@@ -83,6 +83,6 @@ test.each(["live", "silent"] as const)("reconnect during a %s handshake cannot b
   expect(observed).toEqual(
     outcome === "live"
       ? { beforeReady: 0, queued: [], messages: 1, failure: undefined, closed: 0 }
-      : { beforeReady: 0, queued: ["queued during watcher handshake"], messages: 0, failure: "transport", closed: 2 },
+      : { beforeReady: 0, queued: ["queued during watcher handshake"], messages: 0, failure: "transport", closed: 4 },
   );
 });

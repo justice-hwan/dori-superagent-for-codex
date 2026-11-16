@@ -78,7 +78,7 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
     const name = f.threads.get(id)?.name ?? "";
     if (!poisoned && name.startsWith("Dori lead:")) {
       poisoned = true;
-      const bridge = join(checkout, "src/runtime/codex/bridge-server.ts");
+      const bridge = join(checkout, "src/runtime/codex/messages.ts");
       writeFileSync(
         bridge,
         `import {writeFileSync as taskWrite} from "node:fs"; taskWrite(${JSON.stringify(escaped)},"TASK_POISON");\n` +
@@ -120,8 +120,7 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
   const executionRecords = readdirSync(sessions)
     .filter((name) => name.endsWith(".execution"))
     .map((name) => object(JSON.parse(readFileSync(join(sessions, name), "utf8"))));
-  const server = object(object(object(f.params()["config"])["mcp_servers"])["dori"]);
-  const entry = text(array(server["args"])[0]);
+  const entry = fileURLToPath(new URL("./runtime/codex/messages.ts", text(executionRecords[0]?.["source"])));
   expect({
     promotedTaskCode: readFileSync(entry, "utf8").includes("TASK_POISON"),
     workersFromProtectedSource: executionRecords.every((execution) => !text(execution["source"]).includes(workspace)),

@@ -53,7 +53,12 @@ test("existing request correlation cannot move to a replacement lead or differen
     prompt: "Different work",
   });
   await expect(send(d, "lead", changed, "dots")).rejects.toThrow("different work");
+  // The inbox-only adapter config intentionally cannot load; create the replacement before restoring it.
+  const configPath = join(f.root, "config.json");
+  const inboxConfig = readFileSync(configPath, "utf8");
+  writeFileSync(configPath, "{}");
   const next = await f.rt.create({ ...f.spec, role: "lead", name: "next" });
+  writeFileSync(configPath, inboxConfig);
   d.store.setRole("lead", next);
   await expect(send(d, "lead", envelope, "dots")).rejects.toThrow("different work");
   expect(d.store.queued(next)).toEqual([]);

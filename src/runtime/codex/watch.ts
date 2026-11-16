@@ -1,20 +1,20 @@
-import { watch, type WatchListener } from "node:fs";
+import { existsSync, watch, type WatchListener } from "node:fs";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SessionRef } from "../types.ts";
 import { CONNECT_TIMEOUT_MS, CodexError, object, type CodexConnection, type Notification } from "./protocol.ts";
-import { reference, type CodexStore } from "./store.ts";
+import { assertEndpoint, reference, type CodexStore } from "./store.ts";
 import { archiveAbandonedAdmission } from "./review.ts";
 import { isMissingThreadError } from "./threads.ts";
+import { unseenTurns } from "./message-schema.ts";
+import type { ReconcileOutcome } from "./messages.ts";
 
-/** Starts a file watcher; tests substitute one whose stream is not yet live. */
 type WatchDirectory = (
   directory: string,
   options: { readonly recursive: boolean },
   listener: WatchListener<string>,
 ) => { close(): void };
 
-/** Written in each watched directory until its event arrives; neither a record (.json) nor an inbox queue. */
 const READY_SENTINEL = ".dori-watch-ready";
 const READY_WRITES = 40;
 
@@ -46,7 +46,11 @@ const confirmLive = async (directory: string, live: Promise<void>, milliseconds:
 export const watchIdle = async (
   store: CodexStore,
   connection: CodexConnection,
-  callback: (ref: SessionRef) => Promise<void>,
+  callback: (
+    ref: SessionRef,
+    event?: Notification,
+    historical?: ReadonlySet<string>,
+  ) => Promise<void> | Promise<ReconcileOutcome>,
   watchDirectory: WatchDirectory = watch,
   readyMilliseconds = CONNECT_TIMEOUT_MS,
 ): Promise<() => void> => {
@@ -62,21 +66,51 @@ export const watchIdle = async (
     if (outcome.failure) report(outcome.failure);
   };
   const running = new Map<string, Promise<void>>();
-  const rerun = new Set<string>();
+  const rerun = new Map<string, Notification | undefined>();
+  const deferred = new Map<string, string>();
+  const releases = new Map<string, number>();
+  const historical = new Map<string, ReadonlySet<string>>();
+  let sequence = 0;
   let stopped = false;
   const report = (error: unknown) => process.stderr.write(`dori: Codex idle watch failed: ${String(error)}\n`);
-  const invoke = (id: string) => {
+  const invoke = (id: string, event?: Notification) => {
     if (stopped || !subscribed.has(id)) return;
     if (running.has(id)) {
-      rerun.add(id);
+      rerun.set(id, event);
       return;
     }
-    const pending = store.owned({ runtime: "codex", id }).then((entry) => callback(reference(entry)));
+    deferred.delete(id);
+    const epoch = sequence;
+    const pending = store
+      .owned({ runtime: "codex", id })
+      .then(async (entry) =>
+        entry.desktopOwned ? undefined : await callback(reference(entry), event, historical.get(id)),
+      )
+      .then((outcome) => {
+        const resource =
+          outcome === "inbox-busy"
+            ? `inbox:${id}`
+            : outcome?.kind === "target-busy"
+              ? `${outcome.resource}:${outcome.id}`
+              : undefined;
+        if (!resource) return;
+        if ((releases.get(resource) ?? 0) > epoch) rerun.set(id, event);
+        else deferred.set(id, resource);
+      });
     running.set(id, pending);
     void pending.catch(report).finally(() => {
       running.delete(id);
-      if (rerun.delete(id)) invoke(id);
+      if (rerun.has(id)) {
+        const next = rerun.get(id);
+        rerun.delete(id);
+        invoke(id, next);
+      }
     });
+  };
+  const released = (id: string, resource: "inbox" | "submit") => {
+    const key = `${resource}:${id}`;
+    releases.set(key, ++sequence);
+    for (const [source, target] of deferred) if (target === key) invoke(source);
   };
   const refresh = async () => {
     const entries = await store.entries();
@@ -84,14 +118,36 @@ export const watchIdle = async (
       entries
         .filter((entry) => !entry.id.startsWith("worker-"))
         .map(async (entry) => {
-          if (stopped || subscribed.has(entry.id)) return;
+          if (stopped) return;
+          assertEndpoint(entry, connection.address);
           if (entry.admission === "pending") {
             await recover(entry.id);
             return;
           }
-          subscribed.add(entry.id);
+          if (entry.desktopOwned) return;
+          if (subscribed.has(entry.id)) {
+            const response = object(
+              await connection.call("thread/read", {
+                threadId: entry.id,
+                includeTurns: false,
+              }),
+            );
+            if (object(object(response["thread"])["status"])["type"] === "idle") invoke(entry.id);
+            return;
+          }
           try {
-            const response = object(await connection.call("thread/resume", { threadId: entry.id, excludeTurns: true }));
+            if (!historical.has(entry.id))
+              historical.set(
+                entry.id,
+                new Set((await unseenTurns(connection, entry.id, () => false)).map((turn) => String(turn["id"]))),
+              );
+            subscribed.add(entry.id);
+            const response = object(
+              await connection.call("thread/resume", {
+                threadId: entry.id,
+                excludeTurns: true,
+              }),
+            );
             if (object(object(response["thread"])["status"])["type"] === "idle") invoke(entry.id);
           } catch (error) {
             subscribed.delete(entry.id);
@@ -106,7 +162,7 @@ export const watchIdle = async (
     const idle =
       event.method === "turn/completed" ||
       (event.method === "thread/status/changed" && object(event.params["status"])["type"] === "idle");
-    if (idle) invoke(id);
+    if (idle) invoke(id, event);
   };
   const disconnected = () => {
     if (stopped) return;
@@ -122,41 +178,71 @@ export const watchIdle = async (
   };
   connection.listeners.add(listener);
   connection.disconnections.add(disconnected);
-  const recordsLive = Promise.withResolvers<void>();
-  // Until the initial refresh starts, record events add nothing: that refresh runs after both streams are live and
-  // reads every record already written.
+  const recordsLive = Promise.withResolvers<void>(),
+    inboxLive = Promise.withResolvers<void>();
+  const rolesLive = Promise.withResolvers<void>(),
+    lanesLive = Promise.withResolvers<void>();
   let refreshing = false;
-  const watcher = watchDirectory(store.directory, { recursive: false }, (_event, filename) => {
-    if (filename === READY_SENTINEL) return recordsLive.resolve();
-    if (refreshing) void refresh().catch(report);
-  });
-  const inbox = join(store.root, "inbox");
-  await mkdir(inbox, { recursive: true, mode: 0o700 });
-  const inboxLive = Promise.withResolvers<void>();
-  const queues = watchDirectory(inbox, { recursive: true }, (_event, filename) => {
-    if (filename === READY_SENTINEL) return inboxLive.resolve();
-    if (filename?.startsWith("codex--") && filename.endsWith(".jsonl")) invoke(filename.slice(7, -6));
-  });
+  const watchers: { close(): void }[] = [];
+  const inbox = join(store.root, "inbox"),
+    lanes = join(store.root, "lanes");
   try {
-    // Both streams must be live before the initial refresh, so nothing written after that refresh can be missed.
+    await mkdir(inbox, { recursive: true, mode: 0o700 });
+    await mkdir(lanes, { recursive: true, mode: 0o700 });
+    watchers.push(
+      watchDirectory(store.directory, { recursive: false }, (_event, filename) => {
+        if (filename === READY_SENTINEL) return recordsLive.resolve();
+        if (filename?.endsWith(".json.submit-released")) released(filename.slice(0, -21), "submit");
+        if (refreshing && filename?.endsWith(".json.submit-lock") && !existsSync(join(store.directory, filename)))
+          void store
+            .owned({ runtime: "codex", id: filename.slice(0, -17) }, true)
+            .then((entry) => (entry.admission === "pending" && !entry.closed ? refresh() : undefined))
+            .catch(report);
+        if (refreshing && filename?.endsWith(".json")) void refresh().catch(report);
+      }),
+    );
+    watchers.push(
+      watchDirectory(inbox, { recursive: true }, (_event, filename) => {
+        if (filename === READY_SENTINEL) return inboxLive.resolve();
+        if (filename?.startsWith("codex--") && filename.endsWith(".jsonl.lock") && !existsSync(join(inbox, filename))) {
+          released(filename.slice(7, -11), "inbox");
+        }
+        if (filename?.startsWith("codex--") && filename.endsWith(".jsonl")) invoke(filename.slice(7, -6));
+      }),
+    );
+    const registration = () => {
+      if (refreshing) void refresh().catch(report);
+    };
+    watchers.push(
+      watchDirectory(store.root, { recursive: true }, (_event, filename) => {
+        if (filename === READY_SENTINEL) return rolesLive.resolve();
+        if (filename === "roles.json" || filename === join("duty", "stop")) registration();
+      }),
+    );
+    watchers.push(
+      watchDirectory(lanes, { recursive: false }, (_event, filename) => {
+        if (filename === READY_SENTINEL) return lanesLive.resolve();
+        if (filename?.endsWith(".json")) registration();
+      }),
+    );
     const ready = await Promise.allSettled([
       confirmLive(store.directory, recordsLive.promise, readyMilliseconds),
       confirmLive(inbox, inboxLive.promise, readyMilliseconds),
+      confirmLive(store.root, rolesLive.promise, readyMilliseconds),
+      confirmLive(lanes, lanesLive.promise, readyMilliseconds),
     ]);
     for (const outcome of ready) if (outcome.status === "rejected") throw outcome.reason;
     refreshing = true;
     await refresh();
   } catch (error) {
-    watcher.close();
-    queues.close();
+    for (const watcher of watchers) watcher.close();
     connection.listeners.delete(listener);
     connection.disconnections.delete(disconnected);
     throw error;
   }
   return () => {
     stopped = true;
-    watcher.close();
-    queues.close();
+    for (const watcher of watchers) watcher.close();
     connection.listeners.delete(listener);
     connection.disconnections.delete(disconnected);
     connection.disconnect();

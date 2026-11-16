@@ -53,6 +53,7 @@ test.each([
     expect(messages).toEqual(
       Array.from({ length: append || gap === "after" ? 2 : 1 }, () => ({
         type: "userMessage",
+        clientId: expect.any(String),
         content: [{ type: "text", text: "crash-gap-payload", text_elements: [] }],
       })),
     );

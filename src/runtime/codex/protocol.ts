@@ -40,7 +40,11 @@ export class CodexConnection {
   readonly listeners = new Set<(event: Notification) => void>();
   readonly disconnections = new Set<() => void>();
 
-  constructor(private readonly address: string) {}
+  private readonly subscriptions = new Set<string>();
+  constructor(readonly address: string) {}
+  isSubscribed(id: string): boolean {
+    return this.subscriptions.has(id);
+  }
 
   private async connect(): Promise<void> {
     if (this.opening) return this.opening;
@@ -92,6 +96,7 @@ export class CodexConnection {
     socket.addEventListener("close", () => {
       if (this.socket === socket) {
         this.socket = undefined;
+        this.subscriptions.clear();
         this.fail(new CodexError("transport", "Codex connection closed; submitted requests may have been accepted"));
       }
       for (const listener of this.disconnections) listener();
@@ -173,10 +178,20 @@ export class CodexConnection {
 
   async call(method: string, params: Record<string, unknown>): Promise<unknown> {
     await this.connect();
-    return this.send(method, params);
+    const response = await this.send(method, params);
+    if (method === "thread/start" || method === "thread/resume") {
+      const id = text(object(object(response)["thread"])["id"]);
+      if (method === "thread/resume" && id !== params["threadId"])
+        throw new CodexError("protocol", "Resumed thread identity changed");
+      this.subscriptions.add(id);
+    }
+    if (method === "thread/unsubscribe" || method === "thread/archive")
+      this.subscriptions.delete(text(params["threadId"]));
+    return response;
   }
 
   disconnect(): void {
+    this.subscriptions.clear();
     this.socket?.close();
     this.fail(new CodexError("transport", "Dori disconnected from Codex"));
   }

@@ -94,7 +94,7 @@ test.each(["sessions", "inbox"] as const)("a %s watcher that never goes live fai
   console.info("WATCH_READY_FAIL_CLOSED", { dead, outcome, closed: fake.closed.length, sentinels });
   expect({ outcome, closed: fake.closed.length, sentinels }).toEqual({
     outcome: "transport",
-    closed: 2,
+    closed: 4,
     sentinels: [],
   });
 });

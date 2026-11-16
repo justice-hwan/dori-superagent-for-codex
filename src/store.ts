@@ -148,7 +148,7 @@ export class Store {
    * process took it over in between), it is put back and the lock counts as held.
    */
   lockInbox(ref: SessionRef, now: number): (() => void) | undefined {
-    return takeInboxLock(`${this.inboxPath(ref)}.lock`, now);
+    return takeInboxLock(`${this.inboxPath(ref)}.lock`, now, { metadataAfterReservation: ref.runtime === "codex" });
   }
 
   /** The same lock, per lane key: one start owns the key's ownership check and record write at a time. */

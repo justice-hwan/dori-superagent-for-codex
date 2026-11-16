@@ -1,6 +1,10 @@
+import type { Deps } from "../../harness.ts";
+import { createManaged } from "./create-managed.ts";
+import { MessageController } from "./messages.ts";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { takeInboxLock } from "../../inbox-lock.ts";
+import { takeManagedSubmit } from "./submit-lock.ts";
+import { closeOwned } from "./close.ts";
 import type {
   AgentIdentity,
   AgentLaunch,
@@ -18,15 +22,14 @@ import type {
   SubmitResult,
 } from "../types.ts";
 import { NativeStartUncertain } from "../types.ts";
-import { pinHostRuntime, prepareBridge, trustedPath } from "./bridge-install.ts";
-import { disabledConfiguredMcpServers } from "./mcp-config.ts";
-import { CodexConnection, CodexError, object, text } from "./protocol.ts";
+import { pinHostRuntime, trustedPath } from "./bridge-install.ts";
+import { CodexConnection, CodexError } from "./protocol.ts";
 import { deliver, handoff } from "./delivery.ts";
-import { admitThread, runReview } from "./review.ts";
-import { CodexStore, reference, type RecordEntry } from "./store.ts";
-import { defaultCommand, probeThread, readThread, startParams, type Environment } from "./threads.ts";
+import { runReview } from "./review.ts";
+import { CodexStore, assertEndpoint, reference } from "./store.ts";
+import { defaultCommand, probeThread, readThread, type Environment } from "./threads.ts";
 import { watchIdle } from "./watch.ts";
-import { closeWorker, probeWorker, readWorker, startWorker } from "./workers.ts";
+import { probeWorker, readWorker, startWorker } from "./workers.ts";
 import { acknowledgeDelivery, confirmedDelivery } from "./inbox-journal.ts";
 
 /** Shared-daemon client. Closing Dori sessions never stops the desktop daemon. */
@@ -38,6 +41,8 @@ export class CodexRuntime implements SessionRuntime {
 
   constructor(root: string, env?: Environment) {
     const inherited = env ?? process.env;
+    if (inherited["DORI_CODEX_HOST_LABEL"] && !inherited["DORI_CODEX_SOCKET"]?.trim())
+      throw new CodexError("unsupported", "A host label requires an explicit Codex endpoint");
     this.env = {
       ...inherited,
       DORI_CMD: inherited["DORI_CMD"] || defaultCommand,
@@ -69,49 +74,14 @@ export class CodexRuntime implements SessionRuntime {
 
   async create(spec: CreateSpec): Promise<SessionRef> {
     this.prepareHost(spec.cwd);
-    const worker = spec.role === "duty-loop" || spec.role === "hourly-loop";
-    const bridge =
-      !worker && this.env["DORI_CODEX_BRIDGE"] === "stdio" ? prepareBridge(this.store.root, spec, this.env) : undefined;
-    const params = startParams(this.store.root, spec, this.env);
-    let response: Record<string, unknown> | undefined;
-    let admitted: RecordEntry | undefined;
-    try {
-      const config: Record<string, unknown> = { ...object(params["config"]), ...bridge?.config };
-      if (bridge)
-        config["mcp_servers"] = {
-          ...(await disabledConfiguredMcpServers(this.connection, spec.cwd, "dori")),
-          ...object(bridge.config.mcp_servers),
-        };
-      response = worker ? undefined : object(await this.connection.call("thread/start", { ...params, config }));
-      if (bridge && response)
-        admitted = await admitThread(
-          this.connection,
-          this.store,
-          { id: text(object(response["thread"])["id"]), spec, closed: false, admission: "pending" },
-          new Set(Object.keys(object(config["mcp_servers"]))),
-          Number(this.env["DORI_CODEX_REVIEW_TIMEOUT_MS"] || 120_000),
-        );
-    } catch (error) {
-      bridge?.discard();
-      throw error;
-    }
-    const id = response ? text(object(response["thread"])["id"]) : `worker-${crypto.randomUUID()}`;
-    const entry = admitted ?? { id, spec, closed: false };
-    if (!admitted) await this.store.save(entry);
-    bridge?.bind(id);
-    if (!worker)
-      await this.connection.call("thread/name/set", {
-        threadId: id,
-        name: `Dori ${spec.role}: ${spec.name}`,
-      });
-    return reference(entry);
+    return createManaged(this.store, this.connection, spec, this.env);
   }
 
   async start(ref: SessionRef, command: string): Promise<void> {
     await this.store.owned(ref);
     if (!ref.id.startsWith("worker-"))
       throw new CodexError("unsupported", "Agent prompts require startAgent, never a shell command");
-    const release = takeInboxLock(`${this.store.path(ref.id)}.submit-lock`, Date.now());
+    const release = takeManagedSubmit(this.store, ref.id);
     if (!release) throw new CodexError("unsupported", "A submission is still in progress");
     try {
       const entry = await this.store.owned(ref);
@@ -151,16 +121,19 @@ export class CodexRuntime implements SessionRuntime {
 
   async probe(ref: SessionRef): Promise<Probe> {
     const entry = await this.store.owned(ref, true);
+    assertEndpoint(entry, this.connection.address);
     if (entry.closed) return { status: "gone", shellInFront: false };
     if (entry.admission === "pending") return { status: "unknown", shellInFront: false };
+    if (entry.desktopOwned) return { status: "blocked", shellInFront: false };
     return ref.id.startsWith("worker-") ? probeWorker(entry) : probeThread(this.connection, ref.id);
   }
 
   async read(ref: SessionRef, lines: number, _opts?: ReadOptions): Promise<string> {
     const entry = await this.store.owned(ref);
+    assertEndpoint(entry, this.connection.address);
     return ref.id.startsWith("worker-")
       ? readWorker(this.store, entry, lines)
-      : readThread(this.connection, ref.id, lines);
+      : readThread(this.connection, ref.id, lines, false, !entry.desktopOwned);
   }
 
   deliver(ref: SessionRef, prompt: string, opts?: DeliverOptions): Promise<DeliverOutcome> {
@@ -190,21 +163,22 @@ export class CodexRuntime implements SessionRuntime {
 
   async close(ref: SessionRef, _scope?: CloseScope): Promise<void> {
     await this.store.owned(ref, true);
-    const release = takeInboxLock(`${this.store.path(ref.id)}.submit-lock`, Date.now());
+    const release = takeManagedSubmit(this.store, ref.id);
     if (!release) throw new CodexError("unsupported", "A submission is still in progress");
     try {
-      const entry = await this.store.owned(ref, true);
-      if (entry.closed) return;
-      if (ref.id.startsWith("worker-")) await closeWorker(entry);
-      else await this.connection.call(entry.admission ? "thread/archive" : "thread/unsubscribe", { threadId: ref.id });
-      await this.store.save({ ...entry, closed: true });
+      await closeOwned(this.store, this.connection, ref);
     } finally {
       release();
     }
   }
 
-  watchIdle(callback: (ref: SessionRef) => Promise<void>): Promise<() => void> {
-    return watchIdle(this.store, this.connection, callback);
+  watchIdle(callback: (ref: SessionRef) => Promise<void>, deps?: Deps): Promise<() => void> {
+    const controller = deps ? new MessageController(deps, this.store, this.connection) : undefined;
+    return watchIdle(this.store, this.connection, async (ref, event, historical) => {
+      const outcome = await controller?.reconcile(ref, event, historical);
+      await callback(ref);
+      return outcome;
+    });
   }
 
   runReview(
@@ -223,7 +197,7 @@ export class CodexRuntime implements SessionRuntime {
   /** Only an explicit operator ack/resend may resolve an uncertain admission. */
   async resolveDelivery(ref: SessionRef): Promise<void> {
     await this.store.owned(ref);
-    const release = takeInboxLock(`${this.store.path(ref.id)}.submit-lock`, Date.now());
+    const release = takeManagedSubmit(this.store, ref.id);
     if (!release) throw new CodexError("unsupported", "A submission is still in progress");
     try {
       const entry = await this.store.owned(ref);
