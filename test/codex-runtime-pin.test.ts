@@ -51,6 +51,9 @@ if (process.env["DORI_CODEX_WORKER"]) captureWrite(process.env["DORI_HOME"] + "/
   if (fixed === original) throw new Error("Fixture host setup did not apply");
   writeFileSync(harness, fixed);
   const store = new Store(authority);
+  // This fixture exercises worker pinning and hourly lane creation. Duty reconciliation has its own owner tests
+  // and can outlive the hourly completion signal, so pause it before either worker starts.
+  store.setStop(Date.now(), "runtime pin fixture", "duty");
   const brief = join(workspace, "brief.md");
   writeFileSync(brief, "Read-only wire-fixture task.");
   backlogAdd({ ...d, store }, "late-lane", brief, { cwd: workspace });
