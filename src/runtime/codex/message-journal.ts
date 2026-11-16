@@ -5,6 +5,7 @@ import { type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore } from "./store.ts";
 import { type ManagementFinal, type MessageSource, unseenTurns } from "./message-schema.ts";
 import { DoneTargets, type DoneBinding, type DoneTarget } from "./done-target.ts";
+import type { Refusal } from "../../refusal.ts";
 
 export type MessageEffect = {
   readonly turn: string;
@@ -29,7 +30,10 @@ export type AcceptedSubmission = { readonly client: string; readonly turn: strin
 export class MessageJournal {
   private readonly db: Database;
   private readonly doneTargets: DoneTargets;
-  constructor(store: CodexStore, threadId: string) {
+  constructor(
+    store: CodexStore,
+    private readonly threadId: string,
+  ) {
     this.db = new Database(`${store.path(threadId)}.messages.sqlite`, { create: true, strict: true });
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
       CREATE TABLE IF NOT EXISTS effects(turn TEXT PRIMARY KEY,item TEXT NOT NULL,body TEXT NOT NULL,state TEXT NOT NULL,
@@ -119,24 +123,31 @@ export class MessageJournal {
     return this.db
       .transaction(() => {
         if (final.action.tool === "dori_done") this.doneTargets.verify(final, binding);
-        const body = JSON.stringify(final.action);
-        const old = this.db
-          .query<MessageEffect, [string]>("SELECT * FROM effects WHERE turn=?")
-          .get(final.source.turnId);
-        if (old) {
-          if (old.item !== final.source.itemId || old.body !== body)
-            throw new CodexError("uncertain", "Canonical management source changed");
-          return "existing" as const;
-        }
-        this.assertSettled();
-        this.db.run("INSERT INTO effects VALUES(?,?,?,'dispatching','queued','','','')", [
-          final.source.turnId,
-          final.source.itemId,
-          body,
-        ]);
-        return "new" as const;
+        return this.reserveSource(final);
       })
       .immediate();
+  }
+  decline(final: ManagementFinal, refusal: Refusal): void {
+    if (final.source.threadId !== this.threadId) throw new CodexError("ownership", "Management source thread changed");
+    this.db
+      .transaction(() => {
+        this.assertSettled();
+        if (this.reserveSource(final) === "new") this.complete(final, { error: refusal.message }, false, false);
+      })
+      .immediate();
+  }
+  private reserveSource(final: ManagementFinal): "new" | "existing" {
+    const { turnId, itemId } = final.source;
+    const body = JSON.stringify(final.action);
+    const old = this.effect(turnId);
+    if (old) {
+      if (old.item !== itemId || old.body !== body)
+        throw new CodexError("uncertain", "Canonical management source changed");
+      return "existing";
+    }
+    this.assertSettled();
+    this.db.run("INSERT INTO effects VALUES(?,?,?,'dispatching','queued','','','')", [turnId, itemId, body]);
+    return "new";
   }
   complete(final: ManagementFinal, result: unknown, terminal: boolean, ok = true): void {
     const receipt = JSON.stringify({ version: 1, kind: "dori_receipt", source: final.source, ok, result });

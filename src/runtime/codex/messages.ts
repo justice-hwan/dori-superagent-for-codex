@@ -28,20 +28,14 @@ export class MessageController {
   }
   private async scope(ref: SessionRef): Promise<BridgeScope | undefined> {
     const entry = await this.store.owned(ref);
-    if (!entry.envelope) return undefined;
+    if (!entry.envelope || entry.desktopOwned || entry.uncertain || entry.confirmed) return undefined;
     assertEndpoint(entry, this.connection.address);
     const role = entry.spec.role;
     if (role !== "lead" && role !== "lane" && role !== "duty") return undefined;
     const key = role === "lane" ? entry.spec.env["DORI_LANE"] || "" : "";
     const registered = role === "lane" ? this.d.store.lane(key)?.sessionRef : this.d.store.roles()[role];
     if (registered?.runtime !== "codex" || registered.id !== ref.id) return undefined;
-    return {
-      root: realpathSync(this.store.root),
-      cwd: realpathSync(entry.spec.cwd),
-      role,
-      key,
-      id: ref.id,
-    };
+    return { root: realpathSync(this.store.root), cwd: realpathSync(entry.spec.cwd), role, key, id: ref.id };
   }
   private response(journal: MessageJournal, turn: Record<string, unknown>, final: ManagementFinal | undefined): void {
     const receipt = journal.receiptFor(text(turn["id"]));
@@ -93,7 +87,7 @@ export class MessageController {
     try {
       if ((await this.store.owned(ref)).confirmed) return;
       release = takeManagedSubmit(this.store, ref.id);
-      if (!release) return;
+      if (!release) return { kind: "target-busy", resource: "submit", id: ref.id };
       const scope = await this.scope(ref),
         entry = await this.store.owned(ref);
       if (entry.confirmed) return;
@@ -156,25 +150,31 @@ export class MessageController {
           journal.observe(text(turn["id"]), "ordinary-or-failed");
           continue;
         }
-        const currentScope = await this.scope(ref);
-        if (this.d.store.stop("duty") || !currentScope) return;
         const done =
           final.action.tool === "dori_done"
             ? await prepareBoundDone({
                 d: this.d,
-                scope: currentScope,
+                scope,
                 store: this.store,
                 connection: this.connection,
                 journal,
                 final,
                 event,
                 historical,
+              }).catch((error: unknown) => {
+                if (error instanceof Refusal && !journal.doneTarget(final, scope.cwd)) return error;
+                throw error;
               })
             : undefined;
-        const prepared = done?.prepared;
-        if (prepared?.kind === "deferred") return { kind: "target-busy", resource: prepared.resource, id: prepared.id };
+        const prepared = done instanceof Refusal ? undefined : done?.prepared;
         using admission = prepared?.kind === "prepared" ? prepared : undefined;
-        if (this.d.store.stop("duty")) return;
+        const currentScope = await this.scope(ref);
+        if (this.d.store.stop("duty") || JSON.stringify(currentScope) !== JSON.stringify(scope)) return;
+        if (prepared?.kind === "deferred") return { kind: "target-busy", resource: prepared.resource, id: prepared.id };
+        if (done instanceof Refusal) {
+          journal.decline(final, done);
+          continue;
+        }
         if (journal.reserve(final, done?.binding) !== "new") continue;
         try {
           // The existing role handler rechecks current durable registration and workspace itself.
@@ -182,11 +182,11 @@ export class MessageController {
             ? await admission.execute()
             : await callBridgeTool(
                 { ...this.d, lifecycleHooks: "disabled" },
-                currentScope,
+                scope,
                 final.action.tool,
                 final.action.arguments,
               );
-          journal.complete(final, result, currentScope.role === "lane" && final.action.tool === "dori_ready");
+          journal.complete(final, result, scope.role === "lane" && final.action.tool === "dori_ready");
         } catch (error) {
           if (error instanceof Refusal) journal.complete(final, { error: error.message }, false, false);
           else {
