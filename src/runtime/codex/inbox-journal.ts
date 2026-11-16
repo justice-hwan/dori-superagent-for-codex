@@ -1,0 +1,21 @@
+import { takeManagedSubmit } from "./submit-lock.ts";
+import type { DeliveryBatch, SessionRef } from "../types.ts";
+import { CodexError } from "./protocol.ts";
+import type { CodexStore } from "./store.ts";
+
+export const confirmedDelivery = async (store: CodexStore, ref: SessionRef): Promise<DeliveryBatch | undefined> =>
+  (await store.owned(ref, true)).confirmed;
+
+export const acknowledgeDelivery = async (store: CodexStore, ref: SessionRef, batchId: string): Promise<void> => {
+  await store.owned(ref, true);
+  const release = takeManagedSubmit(store, ref.id);
+  if (!release) throw new CodexError("unsupported", "A submission is still in progress");
+  try {
+    const entry = await store.owned(ref, true);
+    if (entry.confirmed?.id !== batchId) return;
+    const { confirmed: _confirmed, ...settled } = entry;
+    await store.save(settled);
+  } finally {
+    release();
+  }
+};
