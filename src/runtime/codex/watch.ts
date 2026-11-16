@@ -6,7 +6,7 @@ import { CONNECT_TIMEOUT_MS, CodexError, object, type CodexConnection, type Noti
 import { assertEndpoint, reference, type CodexStore } from "./store.ts";
 import { archiveAbandonedAdmission } from "./review.ts";
 import { isMissingThreadError } from "./threads.ts";
-import { unseenTurns } from "./message-schema.ts";
+import { unobservedTurns } from "./message-journal.ts";
 import type { ReconcileOutcome } from "./messages.ts";
 
 type WatchDirectory = (
@@ -136,11 +136,7 @@ export const watchIdle = async (
             return;
           }
           try {
-            if (!historical.has(entry.id))
-              historical.set(
-                entry.id,
-                new Set((await unseenTurns(connection, entry.id, () => false)).map((turn) => String(turn["id"]))),
-              );
+            if (!historical.has(entry.id)) historical.set(entry.id, await unobservedTurns(store, connection, entry.id));
             subscribed.add(entry.id);
             const response = object(
               await connection.call("thread/resume", {

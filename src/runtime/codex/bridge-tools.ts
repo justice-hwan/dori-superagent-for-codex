@@ -10,6 +10,9 @@ import { array, object, text } from "./protocol.ts";
 import { CodexStore } from "./store.ts";
 import { callAdapter } from "./bridge-adapter.ts";
 
+/** Up to 100 elided lanes stay small, so the whole status receipt remains under its 64 KiB bound. */
+const STATUS_FINAL_BYTES = 32768;
+
 export type BridgeScope = {
   readonly root: string;
   readonly cwd: string;
@@ -53,15 +56,21 @@ export const callBridgeTool = async (d: Deps, scope: BridgeScope, name: string, 
   switch (name) {
     case "dori_status": {
       argumentsOf(input, []);
+      // A READY final can exceed the 64 KiB receipt bound alone; newest finals fill a budget, older ones are elided.
+      let budget = STATUS_FINAL_BYTES;
       return d.store
         .lanes()
         .filter((lane) => resolve(lane.cwd) === scope.cwd || resolve(lane.cwd) === resolve(owned.spec.cwd))
         .slice(-100)
-        .map((lane) => ({
-          key: lane.key,
-          status: lane.status,
-          final: lane.final,
-        }));
+        .reverse()
+        .map((lane) => {
+          const entry = { key: lane.key, status: lane.status, final: lane.final };
+          const bytes = Buffer.byteLength(JSON.stringify(entry));
+          if (bytes > budget) return { ...entry, final: lane.final && { at: lane.final.at, truncated: true } };
+          budget -= bytes;
+          return entry;
+        })
+        .reverse();
     }
     case "dori_start": {
       const args = argumentsOf(input, ["key", "brief"]);

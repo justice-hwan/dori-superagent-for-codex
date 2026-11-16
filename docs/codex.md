@@ -81,7 +81,9 @@ and native temporary write roots; startup refuses an unsafe placement. Use a
 separate task workspace rather than your entire home directory.
 
 The lead uses `dori_start`, `dori_send`, `dori_status` and `dori_done`; a lane
-receives only `dori_report` and `dori_ready` for itself. These tools invoke trusted
+receives only `dori_report` and `dori_ready` for itself. `dori_status` lists at most
+100 lanes and replaces older READY finals with `{ at, truncated: true }` when they
+would push its receipt past 64 KiB. These tools invoke trusted
 host lifecycle code with a fixed instance/workspace and role capability.
 Management tool calls receive scoped preauthorization; ordinary tools remain
 `workspace-write` and native approval requests remain with the desktop.

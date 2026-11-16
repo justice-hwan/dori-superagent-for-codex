@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
 import type { DeliveryBatch } from "../types.ts";
-import { CodexError, object } from "./protocol.ts";
+import { type CodexConnection, CodexError, object, text } from "./protocol.ts";
 import type { CodexStore } from "./store.ts";
-import type { ManagementFinal, MessageSource } from "./message-schema.ts";
+import { type ManagementFinal, type MessageSource, unseenTurns } from "./message-schema.ts";
 import { DoneTargets, type DoneBinding, type DoneTarget } from "./done-target.ts";
 
 export type MessageEffect = {
@@ -224,4 +225,15 @@ export class MessageJournal {
       body,
     ]);
   }
+}
+
+/** The controller never revisits journal-observed turns, so a startup baseline stops where its scan stops. */
+export async function unobservedTurns(
+  store: CodexStore,
+  connection: CodexConnection,
+  id: string,
+): Promise<ReadonlySet<string>> {
+  using journal = existsSync(`${store.path(id)}.messages.sqlite`) ? new MessageJournal(store, id) : undefined;
+  const turns = await unseenTurns(connection, id, (turn) => journal?.seen(text(turn["id"])) ?? false);
+  return new Set(turns.map((turn) => String(turn["id"])));
 }
