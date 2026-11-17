@@ -17,7 +17,7 @@ This repository, `dori-superagent`, is Dori under the Sustainable Use License. D
 
 The harness (`src/`) is the machine room behind him: one lead session, a duty loop, an hourly loop, as many lanes as the host carries, and a merge gate, in about 4,600 lines of TypeScript on [Bun](https://bun.sh) with no runtime dependencies. It runs on [herdr](https://github.com/herdrdev/herdr), the terminal runtime the sessions live in (or on hc, herdr-core, the headless one from the same project), and [omo](https://github.com/code-yeongyu/oh-my-openagent), the coding agent, which has 70.8k stars on GitHub.
 
-The standalone harness also supports an explicit native Codex backend: GPT threads for the model roles and the original loops in one foreground host. See [native startup, ownership and limits](docs/native-codex.md).
+The standalone harness also supports an explicit native Codex backend: GPT threads for the model roles and the original loops in one foreground host. Follow the [Codex quick start](#native-codex-harness), with [native ownership and limits](docs/native-codex.md) in the detailed guide.
 
 ## What you get
 
@@ -54,6 +54,75 @@ Creating the bot and finishing its login goes through [agent-messenger](https://
 ## Quick start
 
 Both installs put a command named `dori` on your PATH, so install one per machine. On a machine with both, run the harness as `bun src/cli.ts` and leave `dori` to Dori mode; the harness's own prompts call it by its full path either way.
+
+### Native Codex harness
+
+`DORI_RUNTIME=codex`, or `"runtime": "codex"` in your instance's `config.json`, selects native Codex threads for the lead, duty, workers and built-in reviewer. The native lead is the conversation you talk to; the Dori mode messenger setup below is separate.
+
+You need Bun 1.4.4, git, an already running compatible Codex app-server/proxy exposing an absolute Unix socket, and a GPT model enabled on that server. The commands below use Bun installed at a durable location under your home. `gh` is needed for PR review, checks and merge. Selecting the runtime alone does not start the app, provision the server or choose its socket/model.
+
+For a fresh setup, clone this fork's `main` and choose a new instance home separate from terminal runtimes and preserved trials:
+
+```sh
+export BUN_BIN="$HOME/.local/share/dori/toolchains/bun/1.4.4/bin/bun"
+export DORI_REPO="$HOME/src/dori-superagent-for-codex"
+export DORI_HOME="$HOME/.dori-codex-personal"
+mkdir -p "$HOME/src"
+git clone --branch main https://github.com/justice-hwan/dori-superagent-for-codex.git "$DORI_REPO"
+cd "$DORI_REPO"
+"$BUN_BIN" install --frozen-lockfile
+mkdir -p "$DORI_HOME"
+```
+
+Create `$DORI_HOME/config.json` with the following. Replace the example socket with the absolute path provided by your compatible server, and choose a GPT model it supports:
+
+```json
+{
+  "runtime": "codex",
+  "codex": {
+    "socket": "/absolute/path/to/your/native-control.sock",
+    "model": "gpt-6.1-sol"
+  }
+}
+```
+
+`DORI_RUNTIME`, `DORI_CODEX_SOCKET` and `DORI_CODEX_MODEL` override the corresponding config settings. Native permissions inherit the server's policy by default; the detailed [native guide](docs/native-codex.md) explains the explicit per-instance full-access opt-in.
+
+Start the host in this terminal. `--cwd` selects the working directory for the lead and duty; this example uses the checkout itself, and you can choose another existing project:
+
+```sh
+"$BUN_BIN" "$DORI_REPO/src/cli.ts" up --cwd "$DORI_REPO"
+# UP runtime=codex lead=codex:<UUID> duty=codex:<UUID> host=<PID> foreground home=...
+```
+
+`up` creates or reuses the owned lead and duty, then runs the original duty and hourly loops in this foreground process. Keep it running while you use Dori. Ctrl-C stops and joins the loops; it leaves the native conversations in place. Codex and the compatible app-server/proxy must already be running.
+
+In a separate terminal, use the same instance home to check the host and get the actual lead reference:
+
+```sh
+export BUN_BIN="$HOME/.local/share/dori/toolchains/bun/1.4.4/bin/bun"
+export DORI_HOME="$HOME/.dori-codex-personal"
+"$BUN_BIN" "$HOME/src/dori-superagent-for-codex/src/cli.ts" status
+```
+
+In Codex, select the connection backed by that server and open the conversation named `lead`. Match the `DORI_SELF='codex:...'` reference in its bootstrap message to `lead=codex:<UUID>` from `up` or `status`; several trials can have the same title. If the app offers Copy deeplink, use its actual copied link. Then send a first request:
+
+> Read this workspace's README in a lane, summarize how to run it in three lines, and bring the result back here. Leave code unchanged.
+
+For later starts, rerun the same `up` command with the same checkout path, home, working directory, socket, model, access mode and bootstrap prompts. Accepted, owned actors can be reused; pending, unknown and HELD actors are never replayed or replaced. Changed workspace/model/bootstrap or access-mode settings can refuse reuse.
+
+To update a clean `main` checkout, stop its foreground host with Ctrl-C, then:
+
+```sh
+cd "$DORI_REPO"
+git pull --ff-only
+"$BUN_BIN" install --frozen-lockfile
+"$BUN_BIN" "$DORI_REPO/src/cli.ts" up --cwd "$DORI_REPO"
+```
+
+If updated bootstrap instructions or a different access mode prevent reuse, use a fresh dedicated instance rather than editing ownership records or reviving a held trial. Historical test chats can retain paused loops, old checkout paths and private prompts; a source merge does not turn them into an active personal instance.
+
+Ordinary owner testing can begin with the workflow above. Live cold resume remains unproven; it is a separate acceptance limit. See the [native lifecycle guide](docs/native-codex.md) for policy, ownership and HELD behavior.
 
 ### Dori mode, the bot you talk to
 
