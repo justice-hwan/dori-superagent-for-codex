@@ -22,8 +22,8 @@ export function nativePolicyReply(
   return {
     thread: { id: thread.id, cwd: thread.cwd, status: { type: thread.status } },
     cwd: thread.cwd,
-    model: thread.model,
-    modelProvider: "reported-provider",
+    model: mode === "resume-model" ? "rejected-model" : thread.model,
+    modelProvider: mode === "resume-provider" ? "rejected-provider" : "reported-provider",
     sandbox,
     approvalPolicy,
     activePermissionProfile: null,

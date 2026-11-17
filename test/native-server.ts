@@ -133,10 +133,11 @@ export function nativeServer(socket: string, mode = "normal") {
             )
               throw new Error("Unsafe or unbounded resume");
             thread.status = "idle";
-            const admission = nativePolicyReply(thread, params, mode);
+            const admission = nativePolicyReply(thread, params, mode === "lost-resume" ? "policy-sandbox" : mode);
             thread.fullAccess =
               admission.sandbox?.["type"] === "dangerFullAccess" && admission.approvalPolicy === "never";
-            reply(admission);
+            if (mode === "lost-resume") peer.terminate();
+            else reply(admission);
             break;
           }
           case "thread/queue/add": {

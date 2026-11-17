@@ -35,6 +35,7 @@ export type NativeOwner = {
   readonly fullAccess?: boolean;
   readonly policy?: NativePolicy;
   readonly resumePolicy?: NativePolicy;
+  /** Includes unresolved resume admission, even when bootstrap was accepted. */
   readonly policyHeld?: true;
 };
 export type CreatedOwner = NativeOwner & {
@@ -195,7 +196,7 @@ export class NativeState {
       (fullAccess &&
         (!hasFullAccess(owner.policy) || (owner.resumePolicy !== undefined && !hasFullAccess(owner.resumePolicy))))
     )
-      throw new Refusal("HELD native full-access policy/approval was not admitted");
+      throw new Refusal("HELD native policy/resume admission was not confirmed");
     return { ...owner, threadId: owner.threadId, modelProvider: owner.modelProvider, promptHash: owner.promptHash };
   }
 

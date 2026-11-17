@@ -15,6 +15,8 @@ export async function ensureNativeLoaded(
   const target = { threadId: owner.threadId, cwd: owner.cwd };
   const metadata = await selectedNativeThread(connection, target);
   if (metadata.status !== "notLoaded") return metadata;
+  // Resume can load the thread before its response is validated or even received.
+  state.save({ ...owner, policyHeld: true });
   const resumed = await connection.request("thread/resume", {
     threadId: owner.threadId,
     excludeTurns: true,
